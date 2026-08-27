@@ -16,32 +16,76 @@ local originalFogEnd = Lighting.FogEnd
 local originalBrightness = Lighting.Brightness
 
 local config = {
-    raycasting = false,
-    autoHit = false,
-    infiniteAmmo = false,
-    infiniteStamina = false,
-    objectiveESP = false,
-    ammoESP = false,
-    armorESP = false,
-    medkitESP = false,
-    gearESP = false,
-    throwableESP = false,
-    zombieESP = false,
-    playerESP = false,
-    hitboxExpander = false,
-    hitboxSize = 6,
-    nofog = false,
-    fullbright = false,
-    autoReload = false,
+    raycasting        = false,
+    autoHit           = false,
+    infiniteAmmo      = false,
+    infiniteStamina   = false,
+    objectiveESP      = false,
+    ammoESP           = false,
+    armorESP          = false,
+    medkitESP         = false,
+    gearESP           = false,
+    throwableESP      = false,
+    zombieESP         = false,
+    playerESP         = false,
+    hitboxExpander    = false,
+    hitboxSize        = 6,
+    nofog             = false,
+    fullbright        = false,
+    autoReload        = false,
     autoReloadInterval = 2,
+    noRecoil          = false,
 }
 
-local target = {enabled = true, position = nil}
+local target           = {enabled = true, position = nil}
 local highlightObjects = {}
-local expandedHitboxes = {}   -- [part] = originalSize
-local trackedNPCs = {}        -- [npcModel] = {connections = {}, parts = {}}
-local originalAmmoValues = {}
+local expandedHitboxes = {}
+local trackedNPCs      = {}
+local trackedPickups   = {}
+local originalAmmoValues   = {}
 local originalStaminaValue = nil
+
+-- ─── NO RECOIL ────────────────────────────────────────────────────────────────
+--
+-- Reign Fall recoil pipeline (from decompile):
+--   ConnectCameraRecoil  → writes CFrame.Angles(vertical, horizontal, roll)
+--                          into offsets_folder["camera_recoil"] (CFrameValue)
+--                          every Fired event.
+--   ConnectVisualRecoil  → calls spring_handlers.v_recoil:shove(Vector3) on
+--                          every Fired event, spring result written into
+--                          offsets_folder["visual_recoil"] (CFrameValue).
+--   VisualRecoilBlur     → Lighting.VisualRecoilBlur.NearIntensity, lerped on
+--                          Heartbeat.
+--
+-- Strategy: hook __newindex via hookmetamethod on all CFrameValue instances
+-- named "camera_recoil" or "visual_recoil" and return CFrame.new() instead.
+-- Also zero the VisualRecoilBlur NearIntensity so there's no screen blur.
+-- This is purely client-side — server never sees recoil values.
+
+local ZERO_CFRAME = CFrame.new()
+local recoilHook
+
+local function installRecoilHook()
+    if recoilHook then return end
+    recoilHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+        if config.noRecoil then
+            -- intercept Value writes on camera_recoil and visual_recoil CFrameValues
+            if key == "Value"
+            and typeof(value) == "CFrame"
+            and self:IsA("CFrameValue")
+            and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
+                return recoilHook(self, key, ZERO_CFRAME)
+            end
+            -- suppress visual recoil blur
+            if key == "NearIntensity" and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
+                return recoilHook(self, key, 0)
+            end
+        end
+        return recoilHook(self, key, value)
+    end))
+end
+
+installRecoilHook()
 
 -- ─── HIGHLIGHT UTILS ──────────────────────────────────────────────────────────
 
@@ -50,13 +94,13 @@ local function AddHighlight(obj, color, transparency)
     pcall(function()
         local existing = obj:FindFirstChild("TokaiHighlight")
         if existing then existing:Destroy() end
-        local highlight = Instance.new("Highlight")
-        highlight.Name = "TokaiHighlight"
-        highlight.FillColor = color
-        highlight.OutlineColor = color
-        highlight.FillTransparency = transparency or 0.3
-        highlight.OutlineTransparency = 0
-        highlight.Parent = obj
+        local h = Instance.new("Highlight")
+        h.Name = "TokaiHighlight"
+        h.FillColor = color
+        h.OutlineColor = color
+        h.FillTransparency = transparency or 0.3
+        h.OutlineTransparency = 0
+        h.Parent = obj
         highlightObjects[obj] = true
     end)
 end
@@ -69,7 +113,7 @@ local function RemoveHighlight(obj)
     end)
 end
 
--- ─── HITBOX EXPANDER — EVENT-DRIVEN, NO HEARTBEAT SCAN ───────────────────────
+-- ─── HITBOX EXPANDER — EVENT-DRIVEN ───────────────────────────────────────────
 
 local function restoreHitbox(part)
     local original = expandedHitboxes[part]
@@ -123,14 +167,12 @@ local function trackNPC(npcModel)
     local connections = {}
     local parts = {}
 
-    -- expand existing Head immediately
     local head = npcModel:FindFirstChild("Head")
     if head then
         expandHitbox(head)
         table.insert(parts, head)
     end
 
-    -- watch for parts added mid-spawn (R15 rigs load async)
     local descConn = npcModel.DescendantAdded:Connect(function(desc)
         if desc:IsA("BasePart") and desc.Name == "Head" then
             task.wait(0.05)
@@ -140,14 +182,12 @@ local function trackNPC(npcModel)
     end)
     table.insert(connections, descConn)
 
-    -- cleanup on death
     local diedConn = humanoid.Died:Connect(function()
-        task.wait(0.1) -- let death animation settle before restoring
+        task.wait(0.1)
         cleanupNPC(npcModel)
     end)
     table.insert(connections, diedConn)
 
-    -- cleanup if model removed from workspace directly
     local removingConn = npcModel.AncestryChanged:Connect(function(_, parent)
         if not parent then
             cleanupNPC(npcModel)
@@ -174,23 +214,18 @@ local function initHitboxExpander()
         and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
     if not enemyContainer then return end
 
-    -- track all existing NPCs
     for _, npc in ipairs(enemyContainer:GetChildren()) do
-        if npc:IsA("Model") then
-            trackNPC(npc)
-        end
+        if npc:IsA("Model") then trackNPC(npc) end
     end
 
-    -- watch for new NPC spawns
     enemyContainer.ChildAdded:Connect(function(child)
         if config.hitboxExpander and child:IsA("Model") then
-            task.wait(0.1) -- wait for Humanoid to replicate
+            task.wait(0.1)
             trackNPC(child)
         end
     end)
 end
 
--- run once on load, and re-init if the game map reloads
 local function watchForGameReady()
     task.spawn(function()
         while true do
@@ -201,7 +236,6 @@ local function watchForGameReady()
                 and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
             if enemies then
                 initHitboxExpander()
-                -- wait until this container is gone (map ended), then re-init
                 enemies.AncestryChanged:Wait()
                 untrackAllNPCs()
             end
@@ -212,33 +246,27 @@ end
 
 watchForGameReady()
 
--- ─── OBJECTIVE & PICKUP ESP ───────────────────────────────────────────────────
+-- ─── PICKUP ESP ───────────────────────────────────────────────────────────────
 
 local PICKUP_CONFIG = {
-    mission_    = { key = "objectiveESP", color = Color3.fromRGB(0, 255, 0),   prefix = true  },
-    scenery_phone_ringing = { key = "objectiveESP", color = Color3.fromRGB(255, 255, 255), prefix = false },
-    pickup_ammo     = { key = "ammoESP",      color = Color3.fromRGB(255, 255, 0)   },
-    pickup_armor    = { key = "armorESP",     color = Color3.fromRGB(0, 0, 255)     },
-    pickup_medkit   = { key = "medkitESP",    color = Color3.fromRGB(255, 0, 0)     },
-    pickup_gear     = { key = "gearESP",      color = Color3.fromRGB(255, 165, 0)   },
-    pickup_throwable = { key = "throwableESP", color = Color3.fromRGB(180, 0, 255)  },
+    mission_              = { key = "objectiveESP",  color = Color3.fromRGB(0, 255, 0),   prefix = true  },
+    scenery_phone_ringing = { key = "objectiveESP",  color = Color3.fromRGB(255, 255, 255), prefix = false },
+    pickup_ammo           = { key = "ammoESP",       color = Color3.fromRGB(255, 255, 0)   },
+    pickup_armor          = { key = "armorESP",      color = Color3.fromRGB(0, 0, 255)     },
+    pickup_medkit         = { key = "medkitESP",     color = Color3.fromRGB(255, 0, 0)     },
+    pickup_gear           = { key = "gearESP",       color = Color3.fromRGB(255, 165, 0)   },
+    pickup_throwable      = { key = "throwableESP",  color = Color3.fromRGB(180, 0, 255)   },
 }
 
 local function resolvePickupConfig(name)
-    -- check prefix matches first (mission_)
     for key, cfg in pairs(PICKUP_CONFIG) do
-        if cfg.prefix and name:sub(1, #key) == key then
-            return cfg
-        end
+        if cfg.prefix and name:sub(1, #key) == key then return cfg end
     end
     return PICKUP_CONFIG[name]
 end
 
-local trackedPickups = {} -- [obj] = connection (AncestryChanged for auto-remove)
-
 local function trackPickup(obj)
     if trackedPickups[obj] then return end
-    -- auto-remove highlight when pickup is collected (removed from workspace)
     local conn = obj.AncestryChanged:Connect(function(_, parent)
         if not parent then
             RemoveHighlight(obj)
@@ -252,14 +280,10 @@ local function trackPickup(obj)
 end
 
 local function UpdateObjectiveESP()
-    -- remove highlights that got toggled off
     for obj, _ in pairs(highlightObjects) do
         if obj and obj.Parent then
-            local name = obj.Name
-            local cfg = resolvePickupConfig(name)
-            if cfg and not config[cfg.key] then
-                RemoveHighlight(obj)
-            end
+            local cfg = resolvePickupConfig(obj.Name)
+            if cfg and not config[cfg.key] then RemoveHighlight(obj) end
         end
     end
 
@@ -280,16 +304,14 @@ local function UpdateObjectiveESP()
     end
 end
 
--- ─── ENTITY ESP (players / zombies) ──────────────────────────────────────────
+-- ─── ENTITY ESP ───────────────────────────────────────────────────────────────
 
 local function UpdateESP()
     for obj, _ in pairs(highlightObjects) do
         if obj and obj.Parent and obj:FindFirstChildWhichIsA("Humanoid") then
             local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-            if isPlayer and not config.playerESP then
-                RemoveHighlight(obj)
-            elseif not isPlayer and not config.zombieESP then
-                RemoveHighlight(obj)
+            if isPlayer and not config.playerESP then RemoveHighlight(obj)
+            elseif not isPlayer and not config.zombieESP then RemoveHighlight(obj)
             end
         end
     end
@@ -342,8 +364,7 @@ local function getClosestHead()
     else
         referencePos = UserInputService:GetMouseLocation()
     end
-    local bestHeadPos = nil
-    local bestDist = math.huge
+    local bestHeadPos, bestDist = nil, math.huge
     for _, enemy in ipairs(container:GetChildren()) do
         local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
         if head then
@@ -406,13 +427,12 @@ end
 local function getTargets()
     local results = {}
     local container = getEnemyContainer()
-    if container then
-        for _, npc in ipairs(container:GetChildren()) do
-            if npc:IsA("Model") and npc:FindFirstChildWhichIsA("Humanoid") then
-                local part = npc:FindFirstChild("Torso") or npc:FindFirstChild("HumanoidRootPart")
-                if part then
-                    table.insert(results, {model = npc, part = part})
-                end
+    if not container then return results end
+    for _, npc in ipairs(container:GetChildren()) do
+        if npc:IsA("Model") and npc:FindFirstChildWhichIsA("Humanoid") then
+            local part = npc:FindFirstChild("Torso") or npc:FindFirstChild("HumanoidRootPart")
+            if part then
+                table.insert(results, {model = npc, part = part})
             end
         end
     end
@@ -450,9 +470,7 @@ task.spawn(function()
                     local Stamina = Values:FindFirstChild("Stamina")
                     if Stamina and Stamina:IsA("NumberValue") then
                         if config.infiniteStamina then
-                            if not originalStaminaValue then
-                                originalStaminaValue = Stamina.Value
-                            end
+                            if not originalStaminaValue then originalStaminaValue = Stamina.Value end
                             Stamina.Value = 99999
                         else
                             if originalStaminaValue and Stamina.Value == 99999 then
@@ -527,7 +545,7 @@ task.spawn(function()
     end
 end)
 
--- ─── ENVIRONMENT HEARTBEAT (fog, fullbright, ESP updates) ────────────────────
+-- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function()
     if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
@@ -553,19 +571,20 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-    Combat = Window:AddTab('Combat'),
-    Visuals = Window:AddTab('Visuals'),
-    Utility = Window:AddTab('Utility'),
+    Combat        = Window:AddTab('Combat'),
+    Visuals       = Window:AddTab('Visuals'),
+    Utility       = Window:AddTab('Utility'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
-local CombatLeft  = Tabs.Combat:AddLeftGroupbox('Combat Features')
-local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
+local CombatLeft   = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local CombatRight  = Tabs.Combat:AddRightGroupbox('Hitbox')
+local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
-local UtilityLeft = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
+local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
 
--- Combat
+-- Combat left
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
 Toggles.SilentAim:OnChanged(function()
     config.raycasting = Toggles.SilentAim.Value
@@ -576,20 +595,24 @@ Toggles.AutoHit:OnChanged(function()
     config.autoHit = Toggles.AutoHit.Value
 end)
 
-CombatLeft:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
+CombatLeft:AddToggle('NoRecoil', { Text = 'No Recoil', Default = false })
+Toggles.NoRecoil:OnChanged(function()
+    config.noRecoil = Toggles.NoRecoil.Value
+end)
+
+-- Combat right (hitbox)
+CombatRight:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
 Toggles.HitboxExpander:OnChanged(function()
     config.hitboxExpander = Toggles.HitboxExpander.Value
     if not config.hitboxExpander then
-        -- restore all hitboxes immediately on toggle off
-        for npc, tracked in pairs(trackedNPCs) do
+        for _, tracked in pairs(trackedNPCs) do
             for _, part in ipairs(tracked.parts) do
                 restoreHitbox(part)
             end
         end
         expandedHitboxes = {}
     else
-        -- re-expand all currently tracked NPCs
-        for npc, tracked in pairs(trackedNPCs) do
+        for _, tracked in pairs(trackedNPCs) do
             for _, part in ipairs(tracked.parts) do
                 expandHitbox(part)
             end
@@ -597,7 +620,7 @@ Toggles.HitboxExpander:OnChanged(function()
     end
 end)
 
-CombatLeft:AddSlider('HitboxSize', {
+CombatRight:AddSlider('HitboxSize', {
     Text = 'Hitbox Size',
     Default = 6,
     Min = 1,
@@ -606,7 +629,6 @@ CombatLeft:AddSlider('HitboxSize', {
     Compact = false,
     Callback = function(Value)
         config.hitboxSize = Value
-        -- apply new size live to all tracked heads
         if config.hitboxExpander then
             for _, tracked in pairs(trackedNPCs) do
                 for _, part in ipairs(tracked.parts) do
@@ -619,7 +641,7 @@ CombatLeft:AddSlider('HitboxSize', {
     end
 })
 
--- Visuals — ESP
+-- Visuals left
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
 Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
 
@@ -644,20 +666,21 @@ Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Valu
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
 Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
 
--- Visuals — Environment
+-- Visuals right
 VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
 Toggles.Fullbright:OnChanged(function() config.fullbright = Toggles.Fullbright.Value end)
 
 VisualsRight:AddToggle('NoFog', { Text = 'No Fog', Default = false })
 Toggles.NoFog:OnChanged(function() config.nofog = Toggles.NoFog.Value end)
 
--- Utility
+-- Utility left
 UtilityLeft:AddToggle('InfiniteAmmo', { Text = 'Infinite Ammo', Default = false })
 Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
 
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
 Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
 
+-- Utility right
 UtilityRight:AddToggle('AutoReload', { Text = 'Auto Reload', Default = false })
 Toggles.AutoReload:OnChanged(function() config.autoReload = Toggles.AutoReload.Value end)
 
