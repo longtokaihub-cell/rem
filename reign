@@ -35,10 +35,6 @@ local config = {
     autoReload        = false,
     autoReloadInterval = 2,
     noRecoil          = false,
-    bulletTracer      = false,
-    tracerColor       = Color3.fromRGB(255, 220, 50),
-    tracerLifetime    = 0.12,
-    tracerThickness   = 0.06,
 }
 
 local target           = {enabled = true, position = nil}
@@ -90,59 +86,6 @@ local function installRecoilHook()
 end
 
 installRecoilHook()
-
--- ─── BULLET TRACER ───────────────────────────────────────────────────────────
---
--- Reign Fall dùng instant raycast (không có projectile travel time).
--- Bullet đi từ FireOrigin.Value.Position theo LookVector với CollisionGroup
--- "raycast_npc_neutral". Axiom intercept Workspace:Raycast trong __namecall
--- đã hook sẵn — lấy origin + hit.Position, vẽ Part hình trụ noclip giữa
--- hai điểm, tự cleanup sau tracerLifetime giây.
---
--- Part được tạo trong Workspace.Terrain (không replicate lên server).
--- CanCollide = false, CanQuery = false — không ảnh hưởng vật lý.
-
-local tracerFolder = Instance.new("Folder")
-tracerFolder.Name  = "TokaiTracers"
-tracerFolder.Parent = workspace.Terrain
-
-local function spawnTracer(origin, hitPos)
-    if not config.bulletTracer then return end
-    local dir      = hitPos - origin
-    local dist     = dir.Magnitude
-    if dist < 0.5 then return end
-
-    local mid      = origin + dir * 0.5
-    local cf       = CFrame.new(mid, hitPos)
-
-    local part         = Instance.new("Part")
-    part.Name          = "Tracer"
-    part.Anchored      = true
-    part.CanCollide    = false
-    part.CanQuery      = false
-    part.CanTouch      = false
-    part.CastShadow    = false
-    part.Locked        = true
-    part.Material      = Enum.Material.Neon
-    part.Color         = config.tracerColor
-    part.Transparency  = 0.15
-    part.Size          = Vector3.new(config.tracerThickness, config.tracerThickness, dist)
-    part.CFrame        = cf
-    part.Parent        = tracerFolder
-
-    -- fade out then destroy
-    task.delay(config.tracerLifetime * 0.5, function()
-        local steps   = 6
-        local stepT   = (config.tracerLifetime * 0.5) / steps
-        for i = 1, steps do
-            task.wait(stepT)
-            if part and part.Parent then
-                part.Transparency = 0.15 + (0.85 * (i / steps))
-            end
-        end
-        if part and part.Parent then part:Destroy() end
-    end)
-end
 
 -- ─── HIGHLIGHT UTILS ──────────────────────────────────────────────────────────
 
@@ -680,47 +623,6 @@ CombatLeft:AddToggle('NoRecoil', { Text = 'No Recoil', Default = false })
 Toggles.NoRecoil:OnChanged(function()
     config.noRecoil = Toggles.NoRecoil.Value
 end)
-
-CombatLeft:AddToggle('BulletTracer', { Text = 'Bullet Tracer', Default = false })
-Toggles.BulletTracer:OnChanged(function()
-    config.bulletTracer = Toggles.BulletTracer.Value
-    if not config.bulletTracer then
-        -- clear all active tracers immediately on toggle off
-        tracerFolder:ClearAllChildren()
-    end
-end)
-
-CombatLeft:AddSlider('TracerLifetime', {
-    Text = 'Tracer Lifetime (s)',
-    Default = 0.12,
-    Min = 0.05,
-    Max = 0.6,
-    Rounding = 2,
-    Compact = false,
-    Callback = function(v)
-        config.tracerLifetime = v
-    end
-})
-
-CombatLeft:AddSlider('TracerThickness', {
-    Text = 'Tracer Thickness',
-    Default = 0.06,
-    Min = 0.02,
-    Max = 0.3,
-    Rounding = 2,
-    Compact = false,
-    Callback = function(v)
-        config.tracerThickness = v
-    end
-})
-
-CombatLeft:AddColorpicker('TracerColor', {
-    Text = 'Tracer Color',
-    Default = Color3.fromRGB(255, 220, 50),
-    Callback = function(v)
-        config.tracerColor = v
-    end
-})
 
 -- Combat right (hitbox)
 CombatRight:AddToggle('HitboxExpander', { Text = 'Hitbox Expander', Default = false })
