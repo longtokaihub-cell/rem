@@ -35,6 +35,7 @@ local config = {
     autoReload        = false,
     autoReloadInterval = 2,
     noRecoil          = false,
+    noSpread          = false,
 }
 
 local target           = {enabled = true, position = nil}
@@ -47,20 +48,10 @@ local originalStaminaValue = nil
 
 -- ─── NO RECOIL ────────────────────────────────────────────────────────────────
 --
--- Reign Fall recoil pipeline (from decompile):
---   ConnectCameraRecoil  → writes CFrame.Angles(vertical, horizontal, roll)
---                          into offsets_folder["camera_recoil"] (CFrameValue)
---                          every Fired event.
---   ConnectVisualRecoil  → calls spring_handlers.v_recoil:shove(Vector3) on
---                          every Fired event, spring result written into
---                          offsets_folder["visual_recoil"] (CFrameValue).
---   VisualRecoilBlur     → Lighting.VisualRecoilBlur.NearIntensity, lerped on
---                          Heartbeat.
---
--- Strategy: hook __newindex via hookmetamethod on all CFrameValue instances
--- named "camera_recoil" or "visual_recoil" and return CFrame.new() instead.
--- Also zero the VisualRecoilBlur NearIntensity so there's no screen blur.
--- This is purely client-side — server never sees recoil values.
+-- ConnectCameraRecoil  → ghi CFrame.Angles vào offsets_folder["camera_recoil"]
+-- ConnectVisualRecoil  → shove spring vào offsets_folder["visual_recoil"]
+-- Hook __newindex, intercept Value write trên hai CFrameValue đó → CFrame.new()
+-- VisualRecoilBlur.NearIntensity → zero.
 
 local ZERO_CFRAME = CFrame.new()
 local recoilHook
@@ -69,14 +60,12 @@ local function installRecoilHook()
     if recoilHook then return end
     recoilHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
         if config.noRecoil then
-            -- intercept Value writes on camera_recoil and visual_recoil CFrameValues
             if key == "Value"
             and typeof(value) == "CFrame"
             and self:IsA("CFrameValue")
             and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
                 return recoilHook(self, key, ZERO_CFRAME)
             end
-            -- suppress visual recoil blur
             if key == "NearIntensity" and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
                 return recoilHook(self, key, 0)
             end
@@ -249,7 +238,7 @@ watchForGameReady()
 -- ─── PICKUP ESP ───────────────────────────────────────────────────────────────
 
 local PICKUP_CONFIG = {
-    mission_              = { key = "objectiveESP",  color = Color3.fromRGB(0, 255, 0),   prefix = true  },
+    mission_              = { key = "objectiveESP",  color = Color3.fromRGB(0, 255, 0),    prefix = true  },
     scenery_phone_ringing = { key = "objectiveESP",  color = Color3.fromRGB(255, 255, 255), prefix = false },
     pickup_ammo           = { key = "ammoESP",       color = Color3.fromRGB(255, 255, 0)   },
     pickup_armor          = { key = "armorESP",      color = Color3.fromRGB(0, 0, 255)     },
@@ -397,38 +386,31 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
         if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
             local raycastParams = args[3]
             if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                local origin = args[1]
-
-                -- silent aim: redirect bullet toward closest head
+                -- NoSpread: strip random offset — game adds Vector3(rand, rand, rand) to LookVector*1000.
+                -- Snap direction back to the nearest clean axis (the FireOrigin LookVector * magnitude).
+                -- Only the first pellet gets spread (pellet_index == 1 check in source).
+                -- We reconstruct the clean direction by normalizing then rescaling to original magnitude.
+                if config.noSpread then
+                    local dir = args[2]
+                    local mag = dir.Magnitude
+                    if mag > 0.001 then
+                        args[2] = dir.Unit * mag
+                        -- re-snap to camera LookVector to eliminate the random XYZ offset
+                        local camLook = camera.CFrame.LookVector
+                        args[2] = camLook * mag
+                    end
+                end
+                -- SilentAim: redirect toward closest enemy head
                 if config.raycasting and target.position then
+                    local origin = args[1]
                     local dir = target.position - origin
                     if dir.Magnitude > 0.001 then
                         args[2] = dir.Unit * args[2].Magnitude
                     end
                 end
-
-                local result = oldNamecall(self, unpack(args))
-
-                -- bullet tracer: draw from origin to hit or max range endpoint
-                if config.bulletTracer then
-                    local endPos
-                    if result then
-                        endPos = result.Position
-                    else
-                        -- no hit — tracer goes to max range endpoint
-                        local dir3 = args[2]
-                        if dir3.Magnitude > 0.001 then
-                            endPos = origin + dir3
-                        end
-                    end
-                    if endPos then
-                        task.spawn(spawnTracer, origin, endPos)
-                    end
-                end
-
-                return result
             end
         end
+        return oldNamecall(self, unpack(args))
     end
     return oldNamecall(self, ...)
 end))
@@ -595,9 +577,9 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-    Combat        = Window:AddTab('Combat'),
-    Visuals       = Window:AddTab('Visuals'),
-    Utility       = Window:AddTab('Utility'),
+    Combat          = Window:AddTab('Combat'),
+    Visuals         = Window:AddTab('Visuals'),
+    Utility         = Window:AddTab('Utility'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
@@ -622,6 +604,11 @@ end)
 CombatLeft:AddToggle('NoRecoil', { Text = 'No Recoil', Default = false })
 Toggles.NoRecoil:OnChanged(function()
     config.noRecoil = Toggles.NoRecoil.Value
+end)
+
+CombatLeft:AddToggle('NoSpread', { Text = 'No Spread', Default = false })
+Toggles.NoSpread:OnChanged(function()
+    config.noSpread = Toggles.NoSpread.Value
 end)
 
 -- Combat right (hitbox)
@@ -734,7 +721,6 @@ ThemeManager:ApplyToTab(Tabs['UI Settings'])
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
-    tracerFolder:Destroy()
     untrackAllNPCs()
     for obj, conn in pairs(trackedPickups) do
         pcall(function() conn:Disconnect() end)
