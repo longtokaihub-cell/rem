@@ -378,41 +378,45 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
+-- "Raycast" exact-match — no :lower() allocation every call
+local RAYCAST_METHOD = "Raycast"
+
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    if method:lower() == "raycast" and self == Workspace then
-        local args = {...}
-        if #args >= 2 and typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" then
-            local raycastParams = args[3]
-            if raycastParams and raycastParams.CollisionGroup == "raycast_npc_neutral" then
-                -- NoSpread: strip random offset — game adds Vector3(rand, rand, rand) to LookVector*1000.
-                -- Snap direction back to the nearest clean axis (the FireOrigin LookVector * magnitude).
-                -- Only the first pellet gets spread (pellet_index == 1 check in source).
-                -- We reconstruct the clean direction by normalizing then rescaling to original magnitude.
-                if config.noSpread then
-                    local dir = args[2]
-                    local mag = dir.Magnitude
-                    if mag > 0.001 then
-                        args[2] = dir.Unit * mag
-                        -- re-snap to camera LookVector to eliminate the random XYZ offset
-                        local camLook = camera.CFrame.LookVector
-                        args[2] = camLook * mag
-                    end
-                end
-                -- SilentAim: redirect toward closest enemy head
-                if config.raycasting and target.position then
-                    local origin = args[1]
-                    local dir = target.position - origin
-                    if dir.Magnitude > 0.001 then
-                        args[2] = dir.Unit * args[2].Magnitude
-                    end
-                end
-            end
-        end
-        return oldNamecall(self, unpack(args))
+    -- fast path: anything that isn't Workspace:Raycast exits in one compare
+    if self ~= Workspace or getnamecallmethod() ~= RAYCAST_METHOD then
+        return oldNamecall(self, ...)
     end
-    return oldNamecall(self, ...)
+
+    local origin, dir, params = ...
+
+    -- only touch weapon raycasts — everything else untouched
+    if not params or params.CollisionGroup ~= "raycast_npc_neutral" then
+        return oldNamecall(self, ...)
+    end
+
+    local doSpread = config.noSpread
+    local doSilent = config.raycasting and target.position ~= nil
+
+    if not doSpread and not doSilent then
+        return oldNamecall(self, ...)
+    end
+
+    -- NoSpread: game appends Vector3(rand, rand, rand) to LookVector*1000.
+    -- Snap back to camera LookVector * original magnitude — offset gone.
+    if doSpread then
+        dir = camera.CFrame.LookVector * dir.Magnitude
+    end
+
+    -- SilentAim runs after spread strip so both features compose cleanly.
+    if doSilent then
+        local toTarget = target.position - origin
+        if toTarget.Magnitude > 0.001 then
+            dir = toTarget.Unit * dir.Magnitude
+        end
+    end
+
+    return oldNamecall(self, origin, dir, params)
 end))
 
 -- ─── AUTO HIT ────────────────────────────────────────────────────────────────
