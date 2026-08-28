@@ -36,7 +36,17 @@ local config = {
     autoReloadInterval = 2,
     noRecoil          = false,
     noSpread          = false,
+    gunTransparency   = false,
+    gunTranspValue    = 0.5,
+    gunColor          = false,
+    gunColorValue     = Color3.fromRGB(255, 0, 0),
+    gunRainbow        = false,
 }
+
+-- ─── GUN MOD STATE ────────────────────────────────────────────────────────────
+
+local gunModOriginals = {}   -- [part] = {transparency, color}
+local rainbowHue = 0
 
 local target           = {enabled = true, position = nil}
 local highlightObjects = {}
@@ -555,9 +565,94 @@ task.spawn(function()
     end
 end)
 
+-- ─── GUN MOD ─────────────────────────────────────────────────────────────────
+--
+-- Weapon model lives at Character[Tool] → Equipped folder → BaseParts.
+-- We iterate all tools in Character + Backpack, find their Equipped child,
+-- and apply visual overrides directly on the BaseParts.
+-- Originals are saved on first touch and restored on toggle-off or unload.
+
+local function getWeaponParts()
+    local parts = {}
+    local char = lp.Character
+    if not char then return parts end
+    local sources = {char}
+    local backpack = lp:FindFirstChild("Backpack")
+    if backpack then table.insert(sources, backpack) end
+    for _, src in ipairs(sources) do
+        for _, item in ipairs(src:GetChildren()) do
+            if item:IsA("Tool") then
+                local equipped = item:FindFirstChild("Equipped")
+                if equipped then
+                    for _, part in ipairs(equipped:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            table.insert(parts, part)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return parts
+end
+
+local function saveGunOriginal(part)
+    if not gunModOriginals[part] then
+        gunModOriginals[part] = {
+            transparency = part.Transparency,
+            color        = part.Color,
+        }
+    end
+end
+
+local function restoreAllGunParts()
+    for part, orig in pairs(gunModOriginals) do
+        if part and part.Parent then
+            pcall(function()
+                part.Transparency = orig.transparency
+                part.Color        = orig.color
+            end)
+        end
+    end
+    gunModOriginals = {}
+end
+
+local function updateGunMods(dt)
+    local anyActive = config.gunTransparency or config.gunColor or config.gunRainbow
+    if not anyActive then
+        if next(gunModOriginals) then restoreAllGunParts() end
+        return
+    end
+
+    -- rainbow hue advances at 60°/s — full cycle every 6 seconds
+    if config.gunRainbow then
+        rainbowHue = (rainbowHue + dt * 60) % 360
+    end
+
+    local parts = getWeaponParts()
+    for _, part in ipairs(parts) do
+        saveGunOriginal(part)
+        pcall(function()
+            if config.gunTransparency then
+                part.Transparency = config.gunTranspValue
+            else
+                part.Transparency = gunModOriginals[part] and gunModOriginals[part].transparency or 0
+            end
+
+            if config.gunRainbow then
+                part.Color = Color3.fromHSV(rainbowHue / 360, 1, 1)
+            elseif config.gunColor then
+                part.Color = config.gunColorValue
+            else
+                part.Color = gunModOriginals[part] and gunModOriginals[part].color or part.Color
+            end
+        end)
+    end
+end
+
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
-RunService.Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function(dt)
     if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
     if config.fullbright then
         Lighting.Brightness = 3
@@ -566,6 +661,7 @@ RunService.Heartbeat:Connect(function()
         Lighting.Brightness = originalBrightness
         Lighting.GlobalShadows = true
     end
+    updateGunMods(dt)
     UpdateObjectiveESP()
     UpdateESP()
 end)
@@ -584,6 +680,7 @@ local Tabs = {
     Combat          = Window:AddTab('Combat'),
     Visuals         = Window:AddTab('Visuals'),
     Utility         = Window:AddTab('Utility'),
+    Misc            = Window:AddTab('Misc'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
@@ -593,6 +690,7 @@ local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
 local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
 local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
+local MiscLeft     = Tabs.Misc:AddLeftGroupbox('Gun Mods')
 
 -- Combat left
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
@@ -711,6 +809,45 @@ UtilityRight:AddSlider('AutoReloadInterval', {
     end
 })
 
+-- Misc — Gun Mods
+MiscLeft:AddToggle('GunTransparency', { Text = 'Gun Transparency', Default = false })
+Toggles.GunTransparency:OnChanged(function()
+    config.gunTransparency = Toggles.GunTransparency.Value
+    if not config.gunTransparency then restoreAllGunParts() end
+end)
+
+MiscLeft:AddSlider('GunTranspValue', {
+    Text = 'Transparency',
+    Default = 0.5,
+    Min = 0,
+    Max = 1,
+    Rounding = 2,
+    Compact = false,
+    Callback = function(v)
+        config.gunTranspValue = v
+    end
+})
+
+MiscLeft:AddToggle('GunColor', { Text = 'Custom Color', Default = false })
+Toggles.GunColor:OnChanged(function()
+    config.gunColor = Toggles.GunColor.Value
+    if not config.gunColor then restoreAllGunParts() end
+end)
+
+MiscLeft:AddColorpicker('GunColorPicker', {
+    Text = 'Gun Color',
+    Default = Color3.fromRGB(255, 0, 0),
+    Callback = function(v)
+        config.gunColorValue = v
+    end
+})
+
+MiscLeft:AddToggle('GunRainbow', { Text = 'Rainbow Gun', Default = false })
+Toggles.GunRainbow:OnChanged(function()
+    config.gunRainbow = Toggles.GunRainbow.Value
+    if not config.gunRainbow then restoreAllGunParts() end
+end)
+
 -- UI Settings
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
@@ -726,6 +863,7 @@ SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
     untrackAllNPCs()
+    restoreAllGunParts()
     for obj, conn in pairs(trackedPickups) do
         pcall(function() conn:Disconnect() end)
         RemoveHighlight(obj)
