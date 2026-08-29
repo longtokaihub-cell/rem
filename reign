@@ -739,7 +739,8 @@ local CombatLeft  = Tabs.Combat:AddLeftGroupbox('Combat')
 local CombatRight = Tabs.Combat:AddRightGroupbox('Hitbox')
 local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Filters')
 local VisualsRight = Tabs.Visuals:AddRightGroupbox('ESP Settings')
-local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character')
+local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Weapons')
+local UtilityMid   = Tabs.Utility:AddLeftGroupbox('Character')
 local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
 
 -- ── COMBAT ────────────────────────────────────────────────────────────────────
@@ -935,13 +936,13 @@ Toggles.NoFog:OnChanged(function() Config.nofog = Toggles.NoFog.Value end)
 UtilityLeft:AddToggle('InfiniteAmmo', {Text='Infinite Ammo', Default=false})
 Toggles.InfiniteAmmo:OnChanged(function() Config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
 
-UtilityLeft:AddToggle('InfiniteStamina', {Text='Infinite Stamina', Default=false})
+UtilityMid:AddToggle('InfiniteStamina', {Text='Infinite Stamina', Default=false})
 Toggles.InfiniteStamina:OnChanged(function() Config.infiniteStamina = Toggles.InfiniteStamina.Value end)
 
-UtilityLeft:AddToggle('SpeedHack', {Text='Speed Hack', Default=false})
+UtilityMid:AddToggle('SpeedHack', {Text='Speed Hack', Default=false})
 Toggles.SpeedHack:OnChanged(function() Config.speedHack = Toggles.SpeedHack.Value end)
 
-UtilityLeft:AddSlider('SpeedValue', {
+UtilityMid:AddSlider('SpeedValue', {
     Text='Speed', Default=24, Min=8, Max=100, Rounding=1, Compact=false,
     Callback=function(v) Config.speedHackValue = v end
 })
