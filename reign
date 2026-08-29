@@ -46,17 +46,19 @@ local config = {
     noSpread          = false,
     speedHack         = false,
     speedHackValue    = 24,
-    gunTransparency   = false,
-    gunTranspValue    = 0.5,
-    gunColor          = false,
-    gunColorValue     = Color3.fromRGB(255, 0, 0),
-    gunRainbow        = false,
+    -- ESP settings
+    espBoxStyle       = "Full",   -- "Full" | "Corner"
+    espUseHighlight   = false,
+    espUseTracer      = false,
+    espMaxDist        = 3570,     -- studs (~1000m * 3.57)
+    espHealthGradient = true,
+    espHealthBarSide  = "Left",   -- "Left" | "Right" | "Bottom"
+    espBoxColorOverride = false,
+    espBoxColor       = Color3.fromRGB(255, 255, 255),
+    espHealthColor    = Color3.fromRGB(0, 255, 0),
+    espZombieColor    = Color3.fromRGB(255, 60, 60),
+    espPlayerColor    = Color3.fromRGB(0, 200, 255),
 }
-
--- ─── GUN MOD STATE ────────────────────────────────────────────────────────────
-
-local gunModOriginals = {}   -- [part] = {transparency, color}
-local rainbowHue = 0
 
 local target           = {enabled = true, position = nil}
 local highlightObjects = {}
@@ -359,6 +361,20 @@ local function createDrawingSet()
     d.Distance.Size    = 12; d.Distance.Center = true
     d.Distance.Outline = true; d.Distance.Font = 2
     d.Distance.Color   = Color3.new(1,1,1); d.Distance.ZIndex = 3; d.Distance.Visible = false
+
+    -- Corner lines (8 lines for corner-style box)
+    d.Corners = {}
+    for i = 1, 8 do
+        local l = Drawing.new("Line")
+        l.Thickness = 2; l.Transparency = 1; l.ZIndex = 2; l.Visible = false
+        table.insert(d.Corners, l)
+    end
+
+    -- Tracer
+    d.Tracer = Drawing.new("Line")
+    d.Tracer.Thickness = 1; d.Tracer.Transparency = 1; d.Tracer.ZIndex = 1; d.Tracer.Visible = false
+
+    d.Highlight = nil  -- Roblox Highlight instance, created on demand
     return d
 end
 
@@ -366,6 +382,9 @@ local function hideDrawingSet(d)
     d.Box.Visible = false; d.BoxOutline.Visible = false
     d.HealthBar.Visible = false; d.HealthBarOutline.Visible = false
     d.Name.Visible = false; d.Distance.Visible = false
+    if d.Tracer then d.Tracer.Visible = false end
+    if d.Corners then for _, l in ipairs(d.Corners) do l.Visible = false end end
+    if d.Highlight then pcall(function() d.Highlight.Enabled = false end) end
 end
 
 local function removeDrawingSet(d)
@@ -375,10 +394,12 @@ local function removeDrawingSet(d)
     pcall(function() d.HealthBarOutline:Remove() end)
     pcall(function() d.Name:Remove() end)
     pcall(function() d.Distance:Remove() end)
+    if d.Tracer then pcall(function() d.Tracer:Remove() end) end
+    if d.Corners then for _, l in ipairs(d.Corners) do pcall(function() l:Remove() end) end end
+    if d.Highlight then pcall(function() d.Highlight:Destroy() end) end
 end
 
-local function updateDrawingESP(model, d, color, showBox, showHealth, showName, showDist)
-    -- R6 NPCs dùng Torso, players dùng HumanoidRootPart
+local function updateDrawingESP(model, d, entityColor, showBox, showHealth, showName, showDist)
     local root = model:FindFirstChild("HumanoidRootPart")
         or model:FindFirstChild("Torso")
         or model.PrimaryPart
@@ -389,38 +410,69 @@ local function updateDrawingESP(model, d, color, showBox, showHealth, showName, 
     local camPos  = camera.CFrame.Position
     local dist    = (camPos - rootPos).Magnitude
 
+    if dist > config.espMaxDist then hideDrawingSet(d); return end
+
     local screenRoot, onScreen = camera:WorldToViewportPoint(rootPos)
     if not onScreen then hideDrawingSet(d); return end
 
-    -- box height từ head đến chân
+    -- Highlight ESP (Roblox Highlight instance — xuyên tường)
+    if config.espUseHighlight then
+        if not d.Highlight then
+            local h = Instance.new("Highlight")
+            h.FillColor = entityColor; h.OutlineColor = entityColor
+            h.FillTransparency = 0.6; h.OutlineTransparency = 0
+            pcall(function() h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop end)
+            h.Parent = model; d.Highlight = h
+        end
+        d.Highlight.FillColor   = entityColor
+        d.Highlight.OutlineColor = entityColor
+    else
+        if d.Highlight then
+            pcall(function() d.Highlight:Destroy() end); d.Highlight = nil
+        end
+    end
+
     local heightWorld = head and 5.5 or 4.5
     local topPt    = camera:WorldToViewportPoint(rootPos + Vector3.new(0,  heightWorld * 0.5, 0))
     local bottomPt = camera:WorldToViewportPoint(rootPos - Vector3.new(0,  heightWorld * 0.5, 0))
     local boxH     = math.abs(bottomPt.Y - topPt.Y)
-    if boxH < 5 then hideDrawingSet(d); return end  -- quá nhỏ = quá xa, skip
-    local boxW     = boxH * 0.55
-    local bpX      = screenRoot.X - boxW * 0.5
-    local bpY      = screenRoot.Y - boxH * 0.5
+    if boxH < 5 then hideDrawingSet(d); return end
+    local boxW  = boxH * 0.55
+    local bpX   = screenRoot.X - boxW * 0.5
+    local bpY   = screenRoot.Y - boxH * 0.5
+    local boxColor = config.espBoxColorOverride and config.espBoxColor or entityColor
 
-    -- box
+    -- box (Full hoặc Corner style như REBM5)
     if showBox then
-        d.BoxOutline.Size     = Vector2.new(boxW, boxH)
-        d.BoxOutline.Position = Vector2.new(bpX, bpY)
-        d.BoxOutline.Visible  = true
-        d.Box.Size            = Vector2.new(boxW, boxH)
-        d.Box.Position        = Vector2.new(bpX, bpY)
-        d.Box.Color           = color
-        d.Box.Visible         = true
+        if config.espBoxStyle == "Corner" then
+            d.Box.Visible = false; d.BoxOutline.Visible = false
+            local cl = math.min(boxW, boxH) * 0.25
+            local corners = d.Corners
+            if corners then
+                local rx = bpX + boxW; local by = bpY + boxH
+                corners[1].From=Vector2.new(bpX,bpY);     corners[1].To=Vector2.new(bpX+cl,bpY);    corners[1].Color=boxColor; corners[1].Visible=true
+                corners[2].From=Vector2.new(bpX,bpY);     corners[2].To=Vector2.new(bpX,bpY+cl);    corners[2].Color=boxColor; corners[2].Visible=true
+                corners[3].From=Vector2.new(rx,bpY);      corners[3].To=Vector2.new(rx-cl,bpY);     corners[3].Color=boxColor; corners[3].Visible=true
+                corners[4].From=Vector2.new(rx,bpY);      corners[4].To=Vector2.new(rx,bpY+cl);     corners[4].Color=boxColor; corners[4].Visible=true
+                corners[5].From=Vector2.new(bpX,by);      corners[5].To=Vector2.new(bpX+cl,by);     corners[5].Color=boxColor; corners[5].Visible=true
+                corners[6].From=Vector2.new(bpX,by);      corners[6].To=Vector2.new(bpX,by-cl);     corners[6].Color=boxColor; corners[6].Visible=true
+                corners[7].From=Vector2.new(rx,by);       corners[7].To=Vector2.new(rx-cl,by);      corners[7].Color=boxColor; corners[7].Visible=true
+                corners[8].From=Vector2.new(rx,by);       corners[8].To=Vector2.new(rx,by-cl);      corners[8].Color=boxColor; corners[8].Visible=true
+            end
+        else
+            if d.Corners then for _, l in ipairs(d.Corners) do l.Visible = false end end
+            d.BoxOutline.Size=Vector2.new(boxW,boxH); d.BoxOutline.Position=Vector2.new(bpX,bpY); d.BoxOutline.Visible=true
+            d.Box.Size=Vector2.new(boxW,boxH); d.Box.Position=Vector2.new(bpX,bpY); d.Box.Color=boxColor; d.Box.Visible=true
+        end
     else
-        d.Box.Visible = false; d.BoxOutline.Visible = false
+        d.Box.Visible=false; d.BoxOutline.Visible=false
+        if d.Corners then for _, l in ipairs(d.Corners) do l.Visible=false end end
     end
 
-    -- health bar — Reign Fall lưu health tại Humanoid.Values.Health (NumberValue)
-    -- max health tại Humanoid.Values.Health.Max (NumberValue)
-    -- fallback về Humanoid.Health / MaxHealth nếu không tìm thấy custom path
+    -- health bar
     if showHealth then
         local pct = 1
-        local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+        local humanoid = model:FindFirstChild("Humanoid")
         local hValues  = humanoid and humanoid:FindFirstChild("Values")
         local healthNV = hValues and hValues:FindFirstChild("Health")
         local maxNV    = healthNV and healthNV:FindFirstChild("Max")
@@ -429,35 +481,62 @@ local function updateDrawingESP(model, d, color, showBox, showHealth, showName, 
         elseif humanoid and humanoid.MaxHealth > 0 then
             pct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
         end
-        local barH     = boxH * pct
-        local barColor = Color3.fromHSV(pct * 0.33, 1, 1)
+        local barColor = config.espHealthGradient
+            and Color3.fromHSV(pct * 0.33, 1, 1)
+            or config.espHealthColor
 
-        d.HealthBarOutline.Size     = Vector2.new(4, boxH + 2)
-        d.HealthBarOutline.Position = Vector2.new(bpX - 6, bpY - 1)
-        d.HealthBarOutline.Visible  = true
-        d.HealthBar.Size            = Vector2.new(2, barH)
-        d.HealthBar.Position        = Vector2.new(bpX - 5, bpY + (boxH - barH))
-        d.HealthBar.Color           = barColor
-        d.HealthBar.Visible         = true
+        local side = config.espHealthBarSide
+        local barSize, barPos, outlineSize, outlinePos
+        if side == "Bottom" then
+            local barW = boxW * pct
+            barSize    = Vector2.new(barW, 4)
+            barPos     = Vector2.new(bpX, bpY + boxH + 2)
+            outlineSize= Vector2.new(boxW + 2, 6)
+            outlinePos = Vector2.new(bpX - 1, bpY + boxH + 1)
+        elseif side == "Right" then
+            local barHh = boxH * pct
+            barSize    = Vector2.new(2, barHh)
+            barPos     = Vector2.new(bpX + boxW + 3, bpY + (boxH - barHh))
+            outlineSize= Vector2.new(4, boxH + 2)
+            outlinePos = Vector2.new(bpX + boxW + 2, bpY - 1)
+        else -- Left
+            local barHh = boxH * pct
+            barSize    = Vector2.new(2, barHh)
+            barPos     = Vector2.new(bpX - 5, bpY + (boxH - barHh))
+            outlineSize= Vector2.new(4, boxH + 2)
+            outlinePos = Vector2.new(bpX - 6, bpY - 1)
+        end
+        d.HealthBarOutline.Size=outlineSize; d.HealthBarOutline.Position=outlinePos; d.HealthBarOutline.Visible=true
+        d.HealthBar.Size=barSize; d.HealthBar.Position=barPos; d.HealthBar.Color=barColor; d.HealthBar.Visible=true
     else
-        d.HealthBar.Visible = false; d.HealthBarOutline.Visible = false
+        d.HealthBar.Visible=false; d.HealthBarOutline.Visible=false
     end
 
     -- name
     if showName then
-        local nameStr = model.Name ~= "" and model.Name or "Enemy"
-        d.Name.Text     = nameStr
-        d.Name.Color    = color
-        d.Name.Position = Vector2.new(screenRoot.X, bpY - 16)
-        d.Name.Visible  = true
-    else d.Name.Visible = false end
+        d.Name.Text=model.Name~="" and model.Name or "Enemy"
+        d.Name.Color=entityColor
+        d.Name.Position=Vector2.new(screenRoot.X, bpY - 16)
+        d.Name.Visible=true
+    else d.Name.Visible=false end
 
-    -- distance (studs → metres * 0.28)
+    -- distance
     if showDist then
-        d.Distance.Text     = string.format("[%dm]", math.floor(dist * 0.28))
-        d.Distance.Position = Vector2.new(screenRoot.X, bpY + boxH + 2)
-        d.Distance.Visible  = true
-    else d.Distance.Visible = false end
+        d.Distance.Text=string.format("[%dm]", math.floor(dist * 0.28))
+        d.Distance.Position=Vector2.new(screenRoot.X, bpY + boxH + (config.espHealthBarSide=="Bottom" and 10 or 2))
+        d.Distance.Visible=true
+    else d.Distance.Visible=false end
+
+    -- tracer (bottom center screen → entity feet)
+    if config.espUseTracer and d.Tracer then
+        local vp = camera.ViewportSize
+        d.Tracer.From   = Vector2.new(vp.X * 0.5, vp.Y)
+        d.Tracer.To     = Vector2.new(screenRoot.X, bpY + boxH)
+        d.Tracer.Color  = entityColor
+        d.Tracer.Visible = true
+    elseif d.Tracer then
+        d.Tracer.Visible = false
+    end
 end
 
 local function UpdateESP()
@@ -468,8 +547,6 @@ local function UpdateESP()
         local container = getEnemyContainer()
         if container then
             for _, zombie in ipairs(container:GetChildren()) do
-                -- dùng FindFirstChild thẳng — NPC Reign Fall dùng "Humanoid" exact name
-                -- fallback: nếu có PrimaryPart thì vẫn hiện (dead body có thể mất Humanoid)
                 local hasHumanoid = zombie:FindFirstChild("Humanoid") ~= nil
                 if zombie:IsA("Model") and (hasHumanoid or zombie.PrimaryPart) then
                     aliveModels[zombie] = "zombie"
@@ -477,7 +554,7 @@ local function UpdateESP()
                         drawingESPPool[zombie] = createDrawingSet()
                     end
                     updateDrawingESP(zombie, drawingESPPool[zombie],
-                        Color3.fromRGB(255, 60, 60),
+                        config.espZombieColor,
                         config.zombieBox, config.zombieHealth,
                         config.zombieName, config.zombieDistance)
                 end
@@ -488,14 +565,14 @@ local function UpdateESP()
     -- players
     if config.playerESP then
         for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= lp and player.Character and player.Character:FindFirstChildWhichIsA("Humanoid") then
+            if player ~= lp and player.Character and player.Character:FindFirstChild("Humanoid") then
                 local char = player.Character
                 aliveModels[char] = "player"
                 if not drawingESPPool[char] then
                     drawingESPPool[char] = createDrawingSet()
                 end
                 updateDrawingESP(char, drawingESPPool[char],
-                    Color3.fromRGB(0, 200, 255),
+                    config.espPlayerColor,
                     config.playerBox, config.playerHealth,
                     config.playerName, config.playerDistance)
             end
@@ -758,94 +835,9 @@ task.spawn(function()
     end
 end)
 
--- ─── GUN MOD ─────────────────────────────────────────────────────────────────
---
--- Weapon model lives at Character[Tool] → Equipped folder → BaseParts.
--- We iterate all tools in Character + Backpack, find their Equipped child,
--- and apply visual overrides directly on the BaseParts.
--- Originals are saved on first touch and restored on toggle-off or unload.
-
-local function getWeaponParts()
-    local parts = {}
-    local char = lp.Character
-    if not char then return parts end
-    local sources = {char}
-    local backpack = lp:FindFirstChild("Backpack")
-    if backpack then table.insert(sources, backpack) end
-    for _, src in ipairs(sources) do
-        for _, item in ipairs(src:GetChildren()) do
-            if item:IsA("Tool") then
-                local equipped = item:FindFirstChild("Equipped")
-                if equipped then
-                    for _, part in ipairs(equipped:GetDescendants()) do
-                        if part:IsA("BasePart") then
-                            table.insert(parts, part)
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return parts
-end
-
-local function saveGunOriginal(part)
-    if not gunModOriginals[part] then
-        gunModOriginals[part] = {
-            transparency = part.Transparency,
-            color        = part.Color,
-        }
-    end
-end
-
-local function restoreAllGunParts()
-    for part, orig in pairs(gunModOriginals) do
-        if part and part.Parent then
-            pcall(function()
-                part.Transparency = orig.transparency
-                part.Color        = orig.color
-            end)
-        end
-    end
-    gunModOriginals = {}
-end
-
-local function updateGunMods(dt)
-    local anyActive = config.gunTransparency or config.gunColor or config.gunRainbow
-    if not anyActive then
-        if next(gunModOriginals) then restoreAllGunParts() end
-        return
-    end
-
-    -- rainbow hue advances at 60°/s — full cycle every 6 seconds
-    if config.gunRainbow then
-        rainbowHue = (rainbowHue + dt * 60) % 360
-    end
-
-    local parts = getWeaponParts()
-    for _, part in ipairs(parts) do
-        saveGunOriginal(part)
-        pcall(function()
-            if config.gunTransparency then
-                part.Transparency = config.gunTranspValue
-            else
-                part.Transparency = gunModOriginals[part] and gunModOriginals[part].transparency or 0
-            end
-
-            if config.gunRainbow then
-                part.Color = Color3.fromHSV(rainbowHue / 360, 1, 1)
-            elseif config.gunColor then
-                part.Color = config.gunColorValue
-            else
-                part.Color = gunModOriginals[part] and gunModOriginals[part].color or part.Color
-            end
-        end)
-    end
-end
-
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
-RunService.Heartbeat:Connect(function(dt)
+RunService.Heartbeat:Connect(function()
     if config.nofog then Lighting.FogEnd = 100000 else Lighting.FogEnd = originalFogEnd end
     if config.fullbright then
         Lighting.Brightness = 3
@@ -854,7 +846,6 @@ RunService.Heartbeat:Connect(function(dt)
         Lighting.Brightness = originalBrightness
         Lighting.GlobalShadows = true
     end
-    updateGunMods(dt)
     UpdateObjectiveESP()
     UpdateESP()
 end)
@@ -873,17 +864,17 @@ local Tabs = {
     Combat          = Window:AddTab('Combat'),
     Visuals         = Window:AddTab('Visuals'),
     Utility         = Window:AddTab('Utility'),
-    Misc            = Window:AddTab('Misc'),
     ['UI Settings'] = Window:AddTab('UI Settings'),
 }
 
-local CombatLeft   = Tabs.Combat:AddLeftGroupbox('Combat Features')
-local CombatRight  = Tabs.Combat:AddRightGroupbox('Hitbox')
-local VisualsLeft  = Tabs.Visuals:AddLeftGroupbox('ESP Elements')
-local VisualsRight = Tabs.Visuals:AddRightGroupbox('Environment Settings')
-local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
-local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
-local MiscLeft     = Tabs.Misc:AddLeftGroupbox('Gun Mods')
+local CombatLeft    = Tabs.Combat:AddLeftGroupbox('Combat Features')
+local CombatRight   = Tabs.Combat:AddRightGroupbox('Hitbox')
+local VisualsLeft   = Tabs.Visuals:AddLeftGroupbox('ESP Filters')
+local VisualsRight  = Tabs.Visuals:AddRightGroupbox('Environment')
+local VisualsBottom = Tabs.Visuals:AddLeftGroupbox('ESP Settings')
+local ESPColors     = Tabs.Visuals:AddRightGroupbox('ESP Colors & Layout')
+local UtilityLeft   = Tabs.Utility:AddLeftGroupbox('Character & Weapons')
+local UtilityRight  = Tabs.Utility:AddRightGroupbox('Auto Reload')
 
 -- Combat left
 CombatLeft:AddToggle('SilentAim', { Text = 'Silent Aim', Default = false })
@@ -948,6 +939,7 @@ CombatRight:AddSlider('HitboxSize', {
 })
 
 -- Visuals left
+-- Visuals left — ESP Filters
 VisualsLeft:AddToggle('ObjectiveESP', { Text = 'Objective ESP', Default = false })
 Toggles.ObjectiveESP:OnChanged(function() config.objectiveESP = Toggles.ObjectiveESP.Value end)
 
@@ -978,16 +970,16 @@ Toggles.ZombieESP:OnChanged(function()
     end
 end)
 
-VisualsLeft:AddToggle('ZombieBox',      { Text = '  └ Box',      Default = true })
+VisualsLeft:AddToggle('ZombieBox',      { Text = '  └ Box',        Default = true })
 Toggles.ZombieBox:OnChanged(function() config.zombieBox = Toggles.ZombieBox.Value end)
 
-VisualsLeft:AddToggle('ZombieHealth',   { Text = '  └ Health Bar', Default = true })
+VisualsLeft:AddToggle('ZombieHealth',   { Text = '  └ Health Bar',  Default = true })
 Toggles.ZombieHealth:OnChanged(function() config.zombieHealth = Toggles.ZombieHealth.Value end)
 
-VisualsLeft:AddToggle('ZombieName',     { Text = '  └ Name',     Default = true })
+VisualsLeft:AddToggle('ZombieName',     { Text = '  └ Name',        Default = true })
 Toggles.ZombieName:OnChanged(function() config.zombieName = Toggles.ZombieName.Value end)
 
-VisualsLeft:AddToggle('ZombieDistance', { Text = '  └ Distance', Default = true })
+VisualsLeft:AddToggle('ZombieDistance', { Text = '  └ Distance',    Default = true })
 Toggles.ZombieDistance:OnChanged(function() config.zombieDistance = Toggles.ZombieDistance.Value end)
 
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
@@ -1002,17 +994,79 @@ Toggles.PlayerESP:OnChanged(function()
     end
 end)
 
-VisualsLeft:AddToggle('PlayerBox',      { Text = '  └ Box',      Default = true })
+VisualsLeft:AddToggle('PlayerBox',      { Text = '  └ Box',        Default = true })
 Toggles.PlayerBox:OnChanged(function() config.playerBox = Toggles.PlayerBox.Value end)
 
-VisualsLeft:AddToggle('PlayerHealth',   { Text = '  └ Health Bar', Default = true })
+VisualsLeft:AddToggle('PlayerHealth',   { Text = '  └ Health Bar',  Default = true })
 Toggles.PlayerHealth:OnChanged(function() config.playerHealth = Toggles.PlayerHealth.Value end)
 
-VisualsLeft:AddToggle('PlayerName',     { Text = '  └ Name',     Default = true })
+VisualsLeft:AddToggle('PlayerName',     { Text = '  └ Name',        Default = true })
 Toggles.PlayerName:OnChanged(function() config.playerName = Toggles.PlayerName.Value end)
 
-VisualsLeft:AddToggle('PlayerDistance', { Text = '  └ Distance', Default = true })
+VisualsLeft:AddToggle('PlayerDistance', { Text = '  └ Distance',    Default = true })
 Toggles.PlayerDistance:OnChanged(function() config.playerDistance = Toggles.PlayerDistance.Value end)
+
+-- Visuals left — ESP Settings
+VisualsBottom:AddToggle('ESPHighlight', { Text = 'Highlight ESP (xuyên tường)', Default = false })
+Toggles.ESPHighlight:OnChanged(function() config.espUseHighlight = Toggles.ESPHighlight.Value end)
+
+VisualsBottom:AddToggle('ESPTracer', { Text = 'Tracers', Default = false })
+Toggles.ESPTracer:OnChanged(function() config.espUseTracer = Toggles.ESPTracer.Value end)
+
+VisualsBottom:AddDropdown('ESPBoxStyle', {
+    Text = 'Box Style',
+    Values = { 'Full', 'Corner' },
+    Default = 'Full',
+    Callback = function(v) config.espBoxStyle = v end
+})
+
+VisualsBottom:AddDropdown('ESPHealthBarSide', {
+    Text = 'Health Bar Position',
+    Values = { 'Left', 'Right', 'Bottom' },
+    Default = 'Left',
+    Callback = function(v) config.espHealthBarSide = v end
+})
+
+VisualsBottom:AddToggle('ESPHealthGradient', { Text = 'Health Gradient (xanh→đỏ)', Default = true })
+Toggles.ESPHealthGradient:OnChanged(function() config.espHealthGradient = Toggles.ESPHealthGradient.Value end)
+
+VisualsBottom:AddSlider('ESPMaxDist', {
+    Text = 'Max Distance (m)',
+    Default = 1000,
+    Min = 25,
+    Max = 5000,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(v) config.espMaxDist = math.floor(v * 3.57) end
+})
+
+-- Visuals right — ESP Colors & Layout
+ESPColors:AddColorpicker('ESPZombieColor', {
+    Text = 'Zombie Color',
+    Default = Color3.fromRGB(255, 60, 60),
+    Callback = function(v) config.espZombieColor = v end
+})
+
+ESPColors:AddColorpicker('ESPPlayerColor', {
+    Text = 'Player Color',
+    Default = Color3.fromRGB(0, 200, 255),
+    Callback = function(v) config.espPlayerColor = v end
+})
+
+ESPColors:AddToggle('ESPBoxColorOverride', { Text = 'Override Box Color', Default = false })
+Toggles.ESPBoxColorOverride:OnChanged(function() config.espBoxColorOverride = Toggles.ESPBoxColorOverride.Value end)
+
+ESPColors:AddColorpicker('ESPBoxColor', {
+    Text = 'Box Color',
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(v) config.espBoxColor = v end
+})
+
+ESPColors:AddColorpicker('ESPHealthColor', {
+    Text = 'Health Bar Color',
+    Default = Color3.fromRGB(0, 255, 0),
+    Callback = function(v) config.espHealthColor = v end
+})
 
 -- Visuals right
 VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
@@ -1059,45 +1113,6 @@ UtilityRight:AddSlider('AutoReloadInterval', {
     end
 })
 
--- Misc — Gun Mods
-MiscLeft:AddToggle('GunTransparency', { Text = 'Gun Transparency', Default = false })
-Toggles.GunTransparency:OnChanged(function()
-    config.gunTransparency = Toggles.GunTransparency.Value
-    if not config.gunTransparency then restoreAllGunParts() end
-end)
-
-MiscLeft:AddSlider('GunTranspValue', {
-    Text = 'Transparency',
-    Default = 0.5,
-    Min = 0,
-    Max = 1,
-    Rounding = 2,
-    Compact = false,
-    Callback = function(v)
-        config.gunTranspValue = v
-    end
-})
-
-MiscLeft:AddToggle('GunColor', { Text = 'Custom Color', Default = false })
-Toggles.GunColor:OnChanged(function()
-    config.gunColor = Toggles.GunColor.Value
-    if not config.gunColor then restoreAllGunParts() end
-end)
-
-MiscLeft:AddColorpicker('GunColorPicker', {
-    Text = 'Gun Color',
-    Default = Color3.fromRGB(255, 0, 0),
-    Callback = function(v)
-        config.gunColorValue = v
-    end
-})
-
-MiscLeft:AddToggle('GunRainbow', { Text = 'Rainbow Gun', Default = false })
-Toggles.GunRainbow:OnChanged(function()
-    config.gunRainbow = Toggles.GunRainbow.Value
-    if not config.gunRainbow then restoreAllGunParts() end
-end)
-
 -- UI Settings
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({ Text = 'Unload', Func = function() Library:Unload() end })
@@ -1113,7 +1128,6 @@ SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
     untrackAllNPCs()
-    restoreAllGunParts()
     for obj, conn in pairs(trackedPickups) do
         pcall(function() conn:Disconnect() end)
         RemoveHighlight(obj)
