@@ -370,7 +370,10 @@ local function removeDrawingSet(d)
 end
 
 local function updateDrawingESP(model, d, color, showBox, showHealth, showName, showDist)
+    -- R6 NPCs dùng Torso, players dùng HumanoidRootPart
     local root = model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("Torso")
+        or model.PrimaryPart
     local head = model:FindFirstChild("Head")
     if not root then hideDrawingSet(d); return end
 
@@ -381,12 +384,13 @@ local function updateDrawingESP(model, d, color, showBox, showHealth, showName, 
     local screenRoot, onScreen = camera:WorldToViewportPoint(rootPos)
     if not onScreen then hideDrawingSet(d); return end
 
-    -- box height from head to feet using WorldToViewportPoint delta (same as REBM5)
-    local heightWorld = head and 6.0 or 5.0
+    -- box height từ head đến chân
+    local heightWorld = head and 5.5 or 4.5
     local topPt    = camera:WorldToViewportPoint(rootPos + Vector3.new(0,  heightWorld * 0.5, 0))
     local bottomPt = camera:WorldToViewportPoint(rootPos - Vector3.new(0,  heightWorld * 0.5, 0))
     local boxH     = math.abs(bottomPt.Y - topPt.Y)
-    local boxW     = boxH * 0.6
+    if boxH < 5 then hideDrawingSet(d); return end  -- quá nhỏ = quá xa, skip
+    local boxW     = boxH * 0.55
     local bpX      = screenRoot.X - boxW * 0.5
     local bpY      = screenRoot.Y - boxH * 0.5
 
@@ -403,18 +407,22 @@ local function updateDrawingESP(model, d, color, showBox, showHealth, showName, 
         d.Box.Visible = false; d.BoxOutline.Visible = false
     end
 
-    -- health bar (left side, gradient green→red like REBM5)
+    -- health bar — Reign Fall lưu health tại Humanoid.Values.Health (NumberValue)
+    -- max health tại Humanoid.Values.Health.Max (NumberValue)
+    -- fallback về Humanoid.Health / MaxHealth nếu không tìm thấy custom path
     if showHealth then
-        local humanoid   = model:FindFirstChildWhichIsA("Humanoid")
-        local hpValues   = model:FindFirstChild("Humanoid") and
-                           model.Humanoid:FindFirstChild("Values")
-        local healthVal  = hpValues and hpValues:FindFirstChild("Health")
-        local maxHPVal   = healthVal and healthVal:FindFirstChild("Max")
-        local hp         = healthVal and healthVal.Value or (humanoid and humanoid.Health) or 100
-        local maxHp      = maxHPVal and maxHPVal.Value or (humanoid and humanoid.MaxHealth) or 100
-        local pct        = math.clamp(hp / math.max(maxHp, 1), 0, 1)
-        local barH       = boxH * pct
-        local barColor   = Color3.fromHSV(pct * 0.33, 1, 1)  -- green→yellow→red
+        local pct = 1
+        local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+        local hValues  = humanoid and humanoid:FindFirstChild("Values")
+        local healthNV = hValues and hValues:FindFirstChild("Health")
+        local maxNV    = healthNV and healthNV:FindFirstChild("Max")
+        if healthNV and maxNV and maxNV.Value > 0 then
+            pct = math.clamp(healthNV.Value / maxNV.Value, 0, 1)
+        elseif humanoid and humanoid.MaxHealth > 0 then
+            pct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+        end
+        local barH     = boxH * pct
+        local barColor = Color3.fromHSV(pct * 0.33, 1, 1)
 
         d.HealthBarOutline.Size     = Vector2.new(4, boxH + 2)
         d.HealthBarOutline.Position = Vector2.new(bpX - 6, bpY - 1)
@@ -436,7 +444,7 @@ local function updateDrawingESP(model, d, color, showBox, showHealth, showName, 
         d.Name.Visible  = true
     else d.Name.Visible = false end
 
-    -- distance (studs → metres like REBM5: * 0.28)
+    -- distance (studs → metres * 0.28)
     if showDist then
         d.Distance.Text     = string.format("[%dm]", math.floor(dist * 0.28))
         d.Distance.Position = Vector2.new(screenRoot.X, bpY + boxH + 2)
