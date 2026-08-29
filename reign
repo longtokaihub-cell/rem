@@ -315,6 +315,14 @@ end
 
 -- ─── ENTITY ESP ───────────────────────────────────────────────────────────────
 
+local function getEnemyContainer()
+    return workspace.Game
+        and workspace.Game.Current
+        and workspace.Game.Current.Spawned
+        and workspace.Game.Current.Spawned.NPCs
+        and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
+end
+
 -- ─── DRAWING ESP — Box, Health, Name, Distance ────────────────────────────────
 -- Cơ chế mượn từ REBM5: Drawing.new("Square") cho box + health bar,
 -- Drawing.new("Text") cho name/distance. Update mỗi Heartbeat.
@@ -460,7 +468,10 @@ local function UpdateESP()
         local container = getEnemyContainer()
         if container then
             for _, zombie in ipairs(container:GetChildren()) do
-                if zombie:IsA("Model") and zombie:FindFirstChildWhichIsA("Humanoid") then
+                -- dùng FindFirstChild thẳng — NPC Reign Fall dùng "Humanoid" exact name
+                -- fallback: nếu có PrimaryPart thì vẫn hiện (dead body có thể mất Humanoid)
+                local hasHumanoid = zombie:FindFirstChild("Humanoid") ~= nil
+                if zombie:IsA("Model") and (hasHumanoid or zombie.PrimaryPart) then
                     aliveModels[zombie] = "zombie"
                     if not drawingESPPool[zombie] then
                         drawingESPPool[zombie] = createDrawingSet()
@@ -502,14 +513,6 @@ local function UpdateESP()
 end
 
 -- ─── SILENT AIM ───────────────────────────────────────────────────────────────
-
-local function getEnemyContainer()
-    return workspace.Game
-        and workspace.Game.Current
-        and workspace.Game.Current.Spawned
-        and workspace.Game.Current.Spawned.NPCs
-        and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
-end
 
 local function getClosestHead()
     local container = getEnemyContainer()
