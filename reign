@@ -36,6 +36,10 @@ local config = {
     autoReloadInterval = 2,
     noRecoil          = false,
     noSpread          = false,
+    infiniteArmor     = false,
+    speedHack         = false,
+    speedHackValue    = 24,
+    autoRevive        = false,
     gunTransparency   = false,
     gunTranspValue    = 0.5,
     gunColor          = false,
@@ -539,6 +543,112 @@ task.spawn(function()
     end
 end)
 
+-- ─── INFINITE ARMOR ───────────────────────────────────────────────────────────
+-- Armor is a NumberValue at Humanoid.Values.Armor — same pattern as stamina.
+-- Lock it to max_armor value so hits drain it but it snaps back each tick.
+
+local originalArmorValue = nil
+
+task.spawn(function()
+    while task.wait(0.1) do
+        local Character = lp.Character
+        if Character then
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            if Humanoid then
+                local Values = Humanoid:FindFirstChild("Values")
+                if Values then
+                    local Armor    = Values:FindFirstChild("Armor")
+                    local MaxArmor = Values:FindFirstChild("Armor") and Values.Armor:FindFirstChild("Max")
+                    -- MaxArmor lives as child of Armor value (confirmed from GetNewCharacterValueItems)
+                    local maxVal = MaxArmor and MaxArmor.Value or 100
+                    if Armor and Armor:IsA("NumberValue") then
+                        if config.infiniteArmor then
+                            if not originalArmorValue then originalArmorValue = Armor.Value end
+                            Armor.Value = maxVal
+                        else
+                            if originalArmorValue ~= nil then
+                                if Armor.Value == maxVal then Armor.Value = originalArmorValue end
+                                originalArmorValue = nil
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ─── SPEED HACK ───────────────────────────────────────────────────────────────
+-- MovementSpeed.lua reads default_walk_speed from MiscValues every RenderStepped.
+-- Writing to that NumberValue directly feeds into the game's own refresh() pipeline
+-- so sprint multipliers, crouch penalties, etc. all still apply on top of our base.
+
+local originalWalkSpeed = nil
+
+task.spawn(function()
+    while task.wait(0.1) do
+        local Character = lp.Character
+        if not Character then continue end
+        local Humanoid = Character:FindFirstChild("Humanoid")
+        if not Humanoid then continue end
+        local Values = Humanoid:FindFirstChild("Values")
+        if not Values then continue end
+        local MiscValues = Values:FindFirstChild("MiscValues")
+        if not MiscValues then continue end
+        local DefaultWalkSpeed = MiscValues:FindFirstChild("DefaultWalkSpeed")
+        if not DefaultWalkSpeed then continue end
+
+        if config.speedHack then
+            if not originalWalkSpeed then originalWalkSpeed = DefaultWalkSpeed.Value end
+            DefaultWalkSpeed.Value = config.speedHackValue
+        else
+            if originalWalkSpeed ~= nil then
+                DefaultWalkSpeed.Value = originalWalkSpeed
+                originalWalkSpeed = nil
+            end
+        end
+    end
+end)
+
+-- ─── AUTO REVIVE ──────────────────────────────────────────────────────────────
+-- Downed value is a BoolValue at Humanoid.Values.Downed.
+-- When it flips true, fire ActivateAbility with ability_name "revive_kit" —
+-- same RemoteEvent the game uses for skill activation (ActivateAbility in Controls.Misc).
+-- revive_kit is a built-in skill in the game (confirmed from Skills/List).
+
+local autoReviveConn = nil
+
+local function connectAutoRevive()
+    if autoReviveConn then
+        pcall(function() autoReviveConn:Disconnect() end)
+        autoReviveConn = nil
+    end
+
+    local char = lp.Character
+    if not char then return end
+    local humanoid = char:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    local values = humanoid:FindFirstChild("Values")
+    if not values then return end
+    local downed = values:FindFirstChild("Downed")
+    if not downed then return end
+
+    autoReviveConn = downed.Changed:Connect(function(val)
+        if val and config.autoRevive then
+            task.wait(0.3) -- let server register the down state first
+            pcall(function()
+                game.ReplicatedStorage.Events.Controls.Misc.ActivateAbility:FireServer("revive_kit")
+            end)
+        end
+    end)
+end
+
+connectAutoRevive()
+lp.CharacterAdded:Connect(function()
+    task.wait(1)
+    connectAutoRevive()
+end)
+
 -- ─── AUTO RELOAD ──────────────────────────────────────────────────────────────
 
 local function findReloadEvent()
@@ -792,6 +902,27 @@ Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.Infinite
 
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
 Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
+
+UtilityLeft:AddToggle('InfiniteArmor', { Text = 'Infinite Armor', Default = false })
+Toggles.InfiniteArmor:OnChanged(function() config.infiniteArmor = Toggles.InfiniteArmor.Value end)
+
+UtilityLeft:AddToggle('AutoRevive', { Text = 'Auto Revive', Default = false })
+Toggles.AutoRevive:OnChanged(function() config.autoRevive = Toggles.AutoRevive.Value end)
+
+UtilityLeft:AddToggle('SpeedHack', { Text = 'Speed Hack', Default = false })
+Toggles.SpeedHack:OnChanged(function() config.speedHack = Toggles.SpeedHack.Value end)
+
+UtilityLeft:AddSlider('SpeedHackValue', {
+    Text = 'Speed',
+    Default = 24,
+    Min = 8,
+    Max = 100,
+    Rounding = 1,
+    Compact = false,
+    Callback = function(v)
+        config.speedHackValue = v
+    end
+})
 
 -- Utility right
 UtilityRight:AddToggle('AutoReload', { Text = 'Auto Reload', Default = false })
