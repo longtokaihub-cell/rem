@@ -27,7 +27,15 @@ local config = {
     gearESP           = false,
     throwableESP      = false,
     zombieESP         = false,
+    zombieBox         = true,
+    zombieHealth      = true,
+    zombieName        = true,
+    zombieDistance    = true,
     playerESP         = false,
+    playerBox         = true,
+    playerHealth      = true,
+    playerName        = true,
+    playerDistance    = true,
     hitboxExpander    = false,
     hitboxSize        = 6,
     nofog             = false,
@@ -36,10 +44,8 @@ local config = {
     autoReloadInterval = 2,
     noRecoil          = false,
     noSpread          = false,
-    infiniteArmor     = false,
     speedHack         = false,
     speedHackValue    = 24,
-    autoRevive        = false,
     gunTransparency   = false,
     gunTranspValue    = 0.5,
     gunColor          = false,
@@ -309,40 +315,180 @@ end
 
 -- ─── ENTITY ESP ───────────────────────────────────────────────────────────────
 
+-- ─── DRAWING ESP — Box, Health, Name, Distance ────────────────────────────────
+-- Cơ chế mượn từ REBM5: Drawing.new("Square") cho box + health bar,
+-- Drawing.new("Text") cho name/distance. Update mỗi Heartbeat.
+-- WorldToViewportPoint → tính box height từ Head→HumanoidRootPart delta.
+
+local drawingESPPool = {}  -- [model] = { Box, BoxOutline, HealthBar, HealthBarOutline, Name, Distance }
+
+local function createDrawingSet()
+    local d = {}
+    d.BoxOutline       = Drawing.new("Square")
+    d.BoxOutline.Filled = false; d.BoxOutline.Thickness = 3
+    d.BoxOutline.Color  = Color3.new(0,0,0); d.BoxOutline.Transparency = 1
+    d.BoxOutline.ZIndex = 1; d.BoxOutline.Visible = false
+
+    d.Box              = Drawing.new("Square")
+    d.Box.Filled       = false; d.Box.Thickness = 1
+    d.Box.Transparency = 1; d.Box.ZIndex = 2; d.Box.Visible = false
+
+    d.HealthBarOutline = Drawing.new("Square")
+    d.HealthBarOutline.Filled = true; d.HealthBarOutline.Thickness = 1
+    d.HealthBarOutline.Color  = Color3.new(0,0,0)
+    d.HealthBarOutline.Transparency = 1; d.HealthBarOutline.ZIndex = 1; d.HealthBarOutline.Visible = false
+
+    d.HealthBar        = Drawing.new("Square")
+    d.HealthBar.Filled = true; d.HealthBar.Thickness = 1
+    d.HealthBar.ZIndex = 2; d.HealthBar.Visible = false
+
+    d.Name             = Drawing.new("Text")
+    d.Name.Size        = 13; d.Name.Center = true
+    d.Name.Outline     = true; d.Name.Font = 2
+    d.Name.Color       = Color3.new(1,1,1); d.Name.ZIndex = 3; d.Name.Visible = false
+
+    d.Distance         = Drawing.new("Text")
+    d.Distance.Size    = 12; d.Distance.Center = true
+    d.Distance.Outline = true; d.Distance.Font = 2
+    d.Distance.Color   = Color3.new(1,1,1); d.Distance.ZIndex = 3; d.Distance.Visible = false
+    return d
+end
+
+local function hideDrawingSet(d)
+    d.Box.Visible = false; d.BoxOutline.Visible = false
+    d.HealthBar.Visible = false; d.HealthBarOutline.Visible = false
+    d.Name.Visible = false; d.Distance.Visible = false
+end
+
+local function removeDrawingSet(d)
+    pcall(function() d.Box:Remove() end)
+    pcall(function() d.BoxOutline:Remove() end)
+    pcall(function() d.HealthBar:Remove() end)
+    pcall(function() d.HealthBarOutline:Remove() end)
+    pcall(function() d.Name:Remove() end)
+    pcall(function() d.Distance:Remove() end)
+end
+
+local function updateDrawingESP(model, d, color, showBox, showHealth, showName, showDist)
+    local root = model:FindFirstChild("HumanoidRootPart")
+    local head = model:FindFirstChild("Head")
+    if not root then hideDrawingSet(d); return end
+
+    local rootPos = root.Position
+    local camPos  = camera.CFrame.Position
+    local dist    = (camPos - rootPos).Magnitude
+
+    local screenRoot, onScreen = camera:WorldToViewportPoint(rootPos)
+    if not onScreen then hideDrawingSet(d); return end
+
+    -- box height from head to feet using WorldToViewportPoint delta (same as REBM5)
+    local heightWorld = head and 6.0 or 5.0
+    local topPt    = camera:WorldToViewportPoint(rootPos + Vector3.new(0,  heightWorld * 0.5, 0))
+    local bottomPt = camera:WorldToViewportPoint(rootPos - Vector3.new(0,  heightWorld * 0.5, 0))
+    local boxH     = math.abs(bottomPt.Y - topPt.Y)
+    local boxW     = boxH * 0.6
+    local bpX      = screenRoot.X - boxW * 0.5
+    local bpY      = screenRoot.Y - boxH * 0.5
+
+    -- box
+    if showBox then
+        d.BoxOutline.Size     = Vector2.new(boxW, boxH)
+        d.BoxOutline.Position = Vector2.new(bpX, bpY)
+        d.BoxOutline.Visible  = true
+        d.Box.Size            = Vector2.new(boxW, boxH)
+        d.Box.Position        = Vector2.new(bpX, bpY)
+        d.Box.Color           = color
+        d.Box.Visible         = true
+    else
+        d.Box.Visible = false; d.BoxOutline.Visible = false
+    end
+
+    -- health bar (left side, gradient green→red like REBM5)
+    if showHealth then
+        local humanoid   = model:FindFirstChildWhichIsA("Humanoid")
+        local hpValues   = model:FindFirstChild("Humanoid") and
+                           model.Humanoid:FindFirstChild("Values")
+        local healthVal  = hpValues and hpValues:FindFirstChild("Health")
+        local maxHPVal   = healthVal and healthVal:FindFirstChild("Max")
+        local hp         = healthVal and healthVal.Value or (humanoid and humanoid.Health) or 100
+        local maxHp      = maxHPVal and maxHPVal.Value or (humanoid and humanoid.MaxHealth) or 100
+        local pct        = math.clamp(hp / math.max(maxHp, 1), 0, 1)
+        local barH       = boxH * pct
+        local barColor   = Color3.fromHSV(pct * 0.33, 1, 1)  -- green→yellow→red
+
+        d.HealthBarOutline.Size     = Vector2.new(4, boxH + 2)
+        d.HealthBarOutline.Position = Vector2.new(bpX - 6, bpY - 1)
+        d.HealthBarOutline.Visible  = true
+        d.HealthBar.Size            = Vector2.new(2, barH)
+        d.HealthBar.Position        = Vector2.new(bpX - 5, bpY + (boxH - barH))
+        d.HealthBar.Color           = barColor
+        d.HealthBar.Visible         = true
+    else
+        d.HealthBar.Visible = false; d.HealthBarOutline.Visible = false
+    end
+
+    -- name
+    if showName then
+        local nameStr = model.Name ~= "" and model.Name or "Enemy"
+        d.Name.Text     = nameStr
+        d.Name.Color    = color
+        d.Name.Position = Vector2.new(screenRoot.X, bpY - 16)
+        d.Name.Visible  = true
+    else d.Name.Visible = false end
+
+    -- distance (studs → metres like REBM5: * 0.28)
+    if showDist then
+        d.Distance.Text     = string.format("[%dm]", math.floor(dist * 0.28))
+        d.Distance.Position = Vector2.new(screenRoot.X, bpY + boxH + 2)
+        d.Distance.Visible  = true
+    else d.Distance.Visible = false end
+end
+
 local function UpdateESP()
-    for obj, _ in pairs(highlightObjects) do
-        if obj and obj.Parent and obj:FindFirstChildWhichIsA("Humanoid") then
-            local isPlayer = Players:GetPlayerFromCharacter(obj) ~= nil
-            if isPlayer and not config.playerESP then RemoveHighlight(obj)
-            elseif not isPlayer and not config.zombieESP then RemoveHighlight(obj)
+    local aliveModels = {}
+
+    -- zombies
+    if config.zombieESP then
+        local container = getEnemyContainer()
+        if container then
+            for _, zombie in ipairs(container:GetChildren()) do
+                if zombie:IsA("Model") and zombie:FindFirstChildWhichIsA("Humanoid") then
+                    aliveModels[zombie] = "zombie"
+                    if not drawingESPPool[zombie] then
+                        drawingESPPool[zombie] = createDrawingSet()
+                    end
+                    updateDrawingESP(zombie, drawingESPPool[zombie],
+                        Color3.fromRGB(255, 60, 60),
+                        config.zombieBox, config.zombieHealth,
+                        config.zombieName, config.zombieDistance)
+                end
             end
         end
     end
 
+    -- players
     if config.playerESP then
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= lp and player.Character and player.Character:FindFirstChildWhichIsA("Humanoid") then
-                if not player.Character:FindFirstChild("TokaiHighlight") then
-                    AddHighlight(player.Character, Color3.fromRGB(0, 255, 255), 0.3)
+                local char = player.Character
+                aliveModels[char] = "player"
+                if not drawingESPPool[char] then
+                    drawingESPPool[char] = createDrawingSet()
                 end
+                updateDrawingESP(char, drawingESPPool[char],
+                    Color3.fromRGB(0, 200, 255),
+                    config.playerBox, config.playerHealth,
+                    config.playerName, config.playerDistance)
             end
         end
     end
 
-    if config.zombieESP then
-        local enemyContainer = workspace.Game
-            and workspace.Game.Current
-            and workspace.Game.Current.Spawned
-            and workspace.Game.Current.Spawned.NPCs
-            and workspace.Game.Current.Spawned.NPCs:FindFirstChild("enemies")
-        if enemyContainer then
-            for _, zombie in ipairs(enemyContainer:GetChildren()) do
-                if zombie:IsA("Model") and zombie:FindFirstChildWhichIsA("Humanoid") then
-                    if not zombie:FindFirstChild("TokaiHighlight") then
-                        AddHighlight(zombie, Color3.fromRGB(255, 0, 0), 0.3)
-                    end
-                end
-            end
+    -- cleanup stale entries (model removed or toggle turned off)
+    for model, d in pairs(drawingESPPool) do
+        if not aliveModels[model] then
+            hideDrawingSet(d)
+            removeDrawingSet(d)
+            drawingESPPool[model] = nil
         end
     end
 end
@@ -543,41 +689,6 @@ task.spawn(function()
     end
 end)
 
--- ─── INFINITE ARMOR ───────────────────────────────────────────────────────────
--- Armor is a NumberValue at Humanoid.Values.Armor — same pattern as stamina.
--- Lock it to max_armor value so hits drain it but it snaps back each tick.
-
-local originalArmorValue = nil
-
-task.spawn(function()
-    while task.wait(0.1) do
-        local Character = lp.Character
-        if Character then
-            local Humanoid = Character:FindFirstChild("Humanoid")
-            if Humanoid then
-                local Values = Humanoid:FindFirstChild("Values")
-                if Values then
-                    local Armor    = Values:FindFirstChild("Armor")
-                    local MaxArmor = Values:FindFirstChild("Armor") and Values.Armor:FindFirstChild("Max")
-                    -- MaxArmor lives as child of Armor value (confirmed from GetNewCharacterValueItems)
-                    local maxVal = MaxArmor and MaxArmor.Value or 100
-                    if Armor and Armor:IsA("NumberValue") then
-                        if config.infiniteArmor then
-                            if not originalArmorValue then originalArmorValue = Armor.Value end
-                            Armor.Value = maxVal
-                        else
-                            if originalArmorValue ~= nil then
-                                if Armor.Value == maxVal then Armor.Value = originalArmorValue end
-                                originalArmorValue = nil
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
 -- ─── SPEED HACK ───────────────────────────────────────────────────────────────
 -- MovementSpeed.lua reads default_walk_speed from MiscValues every RenderStepped.
 -- Writing to that NumberValue directly feeds into the game's own refresh() pipeline
@@ -608,45 +719,6 @@ task.spawn(function()
             end
         end
     end
-end)
-
--- ─── AUTO REVIVE ──────────────────────────────────────────────────────────────
--- Downed value is a BoolValue at Humanoid.Values.Downed.
--- When it flips true, fire ActivateAbility with ability_name "revive_kit" —
--- same RemoteEvent the game uses for skill activation (ActivateAbility in Controls.Misc).
--- revive_kit is a built-in skill in the game (confirmed from Skills/List).
-
-local autoReviveConn = nil
-
-local function connectAutoRevive()
-    if autoReviveConn then
-        pcall(function() autoReviveConn:Disconnect() end)
-        autoReviveConn = nil
-    end
-
-    local char = lp.Character
-    if not char then return end
-    local humanoid = char:FindFirstChild("Humanoid")
-    if not humanoid then return end
-    local values = humanoid:FindFirstChild("Values")
-    if not values then return end
-    local downed = values:FindFirstChild("Downed")
-    if not downed then return end
-
-    autoReviveConn = downed.Changed:Connect(function(val)
-        if val and config.autoRevive then
-            task.wait(0.3) -- let server register the down state first
-            pcall(function()
-                game.ReplicatedStorage.Events.Controls.Misc.ActivateAbility:FireServer("revive_kit")
-            end)
-        end
-    end)
-end
-
-connectAutoRevive()
-lp.CharacterAdded:Connect(function()
-    task.wait(1)
-    connectAutoRevive()
 end)
 
 -- ─── AUTO RELOAD ──────────────────────────────────────────────────────────────
@@ -884,10 +956,52 @@ VisualsLeft:AddToggle('ThrowableESP', { Text = 'Throwable ESP', Default = false 
 Toggles.ThrowableESP:OnChanged(function() config.throwableESP = Toggles.ThrowableESP.Value end)
 
 VisualsLeft:AddToggle('ZombieESP', { Text = 'Zombie ESP', Default = false })
-Toggles.ZombieESP:OnChanged(function() config.zombieESP = Toggles.ZombieESP.Value end)
+Toggles.ZombieESP:OnChanged(function()
+    config.zombieESP = Toggles.ZombieESP.Value
+    if not config.zombieESP then
+        for model, d in pairs(drawingESPPool) do
+            if Players:GetPlayerFromCharacter(model) == nil then
+                hideDrawingSet(d); removeDrawingSet(d); drawingESPPool[model] = nil
+            end
+        end
+    end
+end)
+
+VisualsLeft:AddToggle('ZombieBox',      { Text = '  └ Box',      Default = true })
+Toggles.ZombieBox:OnChanged(function() config.zombieBox = Toggles.ZombieBox.Value end)
+
+VisualsLeft:AddToggle('ZombieHealth',   { Text = '  └ Health Bar', Default = true })
+Toggles.ZombieHealth:OnChanged(function() config.zombieHealth = Toggles.ZombieHealth.Value end)
+
+VisualsLeft:AddToggle('ZombieName',     { Text = '  └ Name',     Default = true })
+Toggles.ZombieName:OnChanged(function() config.zombieName = Toggles.ZombieName.Value end)
+
+VisualsLeft:AddToggle('ZombieDistance', { Text = '  └ Distance', Default = true })
+Toggles.ZombieDistance:OnChanged(function() config.zombieDistance = Toggles.ZombieDistance.Value end)
 
 VisualsLeft:AddToggle('PlayerESP', { Text = 'Player ESP', Default = false })
-Toggles.PlayerESP:OnChanged(function() config.playerESP = Toggles.PlayerESP.Value end)
+Toggles.PlayerESP:OnChanged(function()
+    config.playerESP = Toggles.PlayerESP.Value
+    if not config.playerESP then
+        for model, d in pairs(drawingESPPool) do
+            if Players:GetPlayerFromCharacter(model) ~= nil then
+                hideDrawingSet(d); removeDrawingSet(d); drawingESPPool[model] = nil
+            end
+        end
+    end
+end)
+
+VisualsLeft:AddToggle('PlayerBox',      { Text = '  └ Box',      Default = true })
+Toggles.PlayerBox:OnChanged(function() config.playerBox = Toggles.PlayerBox.Value end)
+
+VisualsLeft:AddToggle('PlayerHealth',   { Text = '  └ Health Bar', Default = true })
+Toggles.PlayerHealth:OnChanged(function() config.playerHealth = Toggles.PlayerHealth.Value end)
+
+VisualsLeft:AddToggle('PlayerName',     { Text = '  └ Name',     Default = true })
+Toggles.PlayerName:OnChanged(function() config.playerName = Toggles.PlayerName.Value end)
+
+VisualsLeft:AddToggle('PlayerDistance', { Text = '  └ Distance', Default = true })
+Toggles.PlayerDistance:OnChanged(function() config.playerDistance = Toggles.PlayerDistance.Value end)
 
 -- Visuals right
 VisualsRight:AddToggle('Fullbright', { Text = 'Fullbright', Default = false })
@@ -902,12 +1016,6 @@ Toggles.InfiniteAmmo:OnChanged(function() config.infiniteAmmo = Toggles.Infinite
 
 UtilityLeft:AddToggle('InfiniteStamina', { Text = 'Infinite Stamina', Default = false })
 Toggles.InfiniteStamina:OnChanged(function() config.infiniteStamina = Toggles.InfiniteStamina.Value end)
-
-UtilityLeft:AddToggle('InfiniteArmor', { Text = 'Infinite Armor', Default = false })
-Toggles.InfiniteArmor:OnChanged(function() config.infiniteArmor = Toggles.InfiniteArmor.Value end)
-
-UtilityLeft:AddToggle('AutoRevive', { Text = 'Auto Revive', Default = false })
-Toggles.AutoRevive:OnChanged(function() config.autoRevive = Toggles.AutoRevive.Value end)
 
 UtilityLeft:AddToggle('SpeedHack', { Text = 'Speed Hack', Default = false })
 Toggles.SpeedHack:OnChanged(function() config.speedHack = Toggles.SpeedHack.Value end)
@@ -1000,5 +1108,9 @@ Library:OnUnload(function()
         RemoveHighlight(obj)
     end
     trackedPickups = {}
+    for _, d in pairs(drawingESPPool) do
+        hideDrawingSet(d); removeDrawingSet(d)
+    end
+    drawingESPPool = {}
     Library.Unloaded = true
 end)
