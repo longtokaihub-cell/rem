@@ -721,243 +721,156 @@ RunService.Heartbeat:Connect(function()
     UpdateEntityESP()
 end)
 
--- ─── UI ───────────────────────────────────────────────────────────────────────
+-- ─── UI (BRM5 pattern: WrapSection → callback inline) ────────────────────────
 
-local Window = Library:CreateWindow({
-    Title = 'Tokai HUB - Reign Fall',
-    Center = true, AutoShow = true, TabPadding = 8, MenuFadeTime = 0.2
-})
+local function WrapSection(Groupbox)
+    local S = {}
+    function S:AddToggle(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "T")
+        local t = Groupbox:AddToggle(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or false})
+        if Data.Callback then t:OnChanged(Data.Callback) end
+        return t
+    end
+    function S:AddSlider(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "S")
+        local s = Groupbox:AddSlider(Flag, {Text=tostring(Data.Name or Flag), Default=Data.Default or 0, Min=Data.Min or 0, Max=Data.Max or 100, Rounding=Data.Rounding or 0, Suffix=Data.Suffix, Compact=Data.Compact or false})
+        if Data.Callback then s:OnChanged(Data.Callback) end
+        return s
+    end
+    function S:AddDropdown(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "D")
+        local d = Groupbox:AddDropdown(Flag, {Text=tostring(Data.Name or Flag), Values=Data.Values or {}, Default=Data.Default, Multi=false})
+        if Data.Callback then d:OnChanged(Data.Callback) end
+        return d
+    end
+    function S:AddColorPicker(Data)
+        local Flag = tostring(Data.Flag or Data.Name or "C")
+        local label = Groupbox:AddLabel(tostring(Data.Name or Flag))
+        label:AddColorPicker(Flag, {Default=Data.Default or Color3.new(1,1,1)})
+        if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+    end
+    function S:AddButton(Data)
+        return Groupbox:AddButton(Data.Name or "Button", Data.Callback or function() end)
+    end
+    return S
+end
 
-local Tabs = {
-    Combat        = Window:AddTab('Combat'),
-    Visuals       = Window:AddTab('Visuals'),
-    Utility       = Window:AddTab('Utility'),
-    ['UI Settings'] = Window:AddTab('UI Settings'),
-}
+local function DrawSection(Tab, Name, Position)
+    if string.lower(Position or "left") == "right" then
+        return WrapSection(Tab:AddRightGroupbox(Name))
+    end
+    return WrapSection(Tab:AddLeftGroupbox(Name))
+end
 
-local CombatLeft  = Tabs.Combat:AddLeftGroupbox('Combat')
-local CombatRight = Tabs.Combat:AddRightGroupbox('Hitbox')
-local VisualsLeft = Tabs.Visuals:AddLeftGroupbox('ESP Filters')
-local VisualsRight = Tabs.Visuals:AddRightGroupbox('ESP Settings')
-local UtilityLeft  = Tabs.Utility:AddLeftGroupbox('Weapons')
-local UtilityMid   = Tabs.Utility:AddLeftGroupbox('Character')
-local UtilityRight = Tabs.Utility:AddRightGroupbox('Auto Reload')
+local Window = Library:CreateWindow({Title='Tokai HUB - Reign Fall', Center=true, AutoShow=true, TabPadding=8, MenuFadeTime=0.2})
+local T_Combat  = Window:AddTab('Combat')
+local T_Visuals = Window:AddTab('Visuals')
+local T_Utility = Window:AddTab('Utility')
+local T_Settings = Window:AddTab('UI Settings')
 
--- ── COMBAT ────────────────────────────────────────────────────────────────────
+-- COMBAT
+local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
+S_Aim:AddToggle({Name='Silent Aim',  Flag='SilentAim',  Default=false, Callback=function(v) Config.raycasting=v end})
+S_Aim:AddToggle({Name='Auto Hit',    Flag='AutoHit',    Default=false, Callback=function(v) Config.autoHit=v end})
+S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=function(v) Config.noRecoil=v end})
+S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
-CombatLeft:AddToggle('SilentAim', {Text='Silent Aim', Default=false})
-Toggles.SilentAim:OnChanged(function() Config.raycasting = Toggles.SilentAim.Value end)
-
-CombatLeft:AddToggle('AutoHit', {Text='Auto Hit', Default=false})
-Toggles.AutoHit:OnChanged(function() Config.autoHit = Toggles.AutoHit.Value end)
-
-CombatLeft:AddToggle('NoRecoil', {Text='No Recoil', Default=false})
-Toggles.NoRecoil:OnChanged(function() Config.noRecoil = Toggles.NoRecoil.Value end)
-
-CombatLeft:AddToggle('NoSpread', {Text='No Spread', Default=false})
-Toggles.NoSpread:OnChanged(function() Config.noSpread = Toggles.NoSpread.Value end)
-
--- ── HITBOX ────────────────────────────────────────────────────────────────────
-
-CombatRight:AddToggle('HitboxExpander', {Text='Hitbox Expander', Default=false})
-Toggles.HitboxExpander:OnChanged(function()
-    Config.hitboxExpander = Toggles.HitboxExpander.Value
-    if not Config.hitboxExpander then
-        for _, tracked in pairs(trackedNPCs) do
-            for _, part in ipairs(tracked.parts) do restoreHitbox(part) end
-        end
-        expandedHitboxes = {}
+local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
+S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
+    Config.hitboxExpander=v
+    if not v then
+        for _, tracked in pairs(trackedNPCs) do for _, part in ipairs(tracked.parts) do restoreHitbox(part) end end
+        expandedHitboxes={}
     else
+        for _, tracked in pairs(trackedNPCs) do for _, part in ipairs(tracked.parts) do expandHitbox(part) end end
+    end
+end})
+S_Hitbox:AddSlider({Name='Hitbox Size', Flag='HitboxSize', Default=6, Min=1, Max=20, Rounding=1, Callback=function(v)
+    Config.hitboxSize=v
+    if Config.hitboxExpander then
         for _, tracked in pairs(trackedNPCs) do
-            for _, part in ipairs(tracked.parts) do expandHitbox(part) end
-        end
-    end
-end)
-
-CombatRight:AddSlider('HitboxSize', {
-    Text='Hitbox Size', Default=6, Min=1, Max=20, Rounding=1, Compact=false,
-    Callback=function(v)
-        Config.hitboxSize = v
-        if Config.hitboxExpander then
-            for _, tracked in pairs(trackedNPCs) do
-                for _, part in ipairs(tracked.parts) do
-                    if part and part.Parent then
-                        pcall(function() part.Size=Vector3.new(v,v,v) end)
-                    end
-                end
+            for _, part in ipairs(tracked.parts) do
+                if part and part.Parent then pcall(function() part.Size=Vector3.new(v,v,v) end) end
             end
         end
     end
-})
+end})
 
--- ── VISUALS LEFT — ESP Filters ────────────────────────────────────────────────
+-- VISUALS
+local S_Pickup = DrawSection(T_Visuals, 'Pickup ESP', 'left')
+S_Pickup:AddToggle({Name='Objective ESP', Flag='ObjectiveESP', Default=false, Callback=function(v) Config.objectiveESP=v end})
+S_Pickup:AddToggle({Name='Ammo ESP',      Flag='AmmoESP',      Default=false, Callback=function(v) Config.ammoESP=v end})
+S_Pickup:AddToggle({Name='Armor ESP',     Flag='ArmorESP',     Default=false, Callback=function(v) Config.armorESP=v end})
+S_Pickup:AddToggle({Name='Medkit ESP',    Flag='MedkitESP',    Default=false, Callback=function(v) Config.medkitESP=v end})
+S_Pickup:AddToggle({Name='Gear ESP',      Flag='GearESP',      Default=false, Callback=function(v) Config.gearESP=v end})
+S_Pickup:AddToggle({Name='Throwable ESP', Flag='ThrowableESP', Default=false, Callback=function(v) Config.throwableESP=v end})
 
-VisualsLeft:AddToggle('ObjectiveESP', {Text='Objective ESP', Default=false})
-Toggles.ObjectiveESP:OnChanged(function() Config.objectiveESP = Toggles.ObjectiveESP.Value end)
-
-VisualsLeft:AddToggle('AmmoESP', {Text='Ammo ESP', Default=false})
-Toggles.AmmoESP:OnChanged(function() Config.ammoESP = Toggles.AmmoESP.Value end)
-
-VisualsLeft:AddToggle('ArmorESP', {Text='Armor ESP', Default=false})
-Toggles.ArmorESP:OnChanged(function() Config.armorESP = Toggles.ArmorESP.Value end)
-
-VisualsLeft:AddToggle('MedkitESP', {Text='Medkit ESP', Default=false})
-Toggles.MedkitESP:OnChanged(function() Config.medkitESP = Toggles.MedkitESP.Value end)
-
-VisualsLeft:AddToggle('GearESP', {Text='Gear ESP', Default=false})
-Toggles.GearESP:OnChanged(function() Config.gearESP = Toggles.GearESP.Value end)
-
-VisualsLeft:AddToggle('ThrowableESP', {Text='Throwable ESP', Default=false})
-Toggles.ThrowableESP:OnChanged(function() Config.throwableESP = Toggles.ThrowableESP.Value end)
-
-VisualsLeft:AddToggle('ZombieESP', {Text='Zombie ESP', Default=false})
-Toggles.ZombieESP:OnChanged(function()
-    Config.zombieESP = Toggles.ZombieESP.Value
-    if not Config.zombieESP then
+local S_ZombieESP = DrawSection(T_Visuals, 'Zombie ESP', 'left')
+S_ZombieESP:AddToggle({Name='Zombie ESP',    Flag='ZombieESP', Default=false, Callback=function(v)
+    Config.zombieESP=v
+    if not v then
         for model, espData in pairs(drawingPool) do
-            if Players:GetPlayerFromCharacter(model) == nil then
-                RemoveDrawingESP(espData.Drawing, espData.Highlight); drawingPool[model]=nil
-            end
+            if Players:GetPlayerFromCharacter(model)==nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
         end
     end
-end)
+end})
+S_ZombieESP:AddToggle({Name='  └ Box',      Flag='ZombieBox',      Default=true,  Callback=function(v) Config.zombieBox=v end})
+S_ZombieESP:AddToggle({Name='  └ Health',   Flag='ZombieHealth',   Default=true,  Callback=function(v) Config.zombieHealth=v end})
+S_ZombieESP:AddToggle({Name='  └ Name',     Flag='ZombieName',     Default=true,  Callback=function(v) Config.zombieName=v end})
+S_ZombieESP:AddToggle({Name='  └ Distance', Flag='ZombieDistance', Default=true,  Callback=function(v) Config.zombieDistance=v end})
 
-VisualsLeft:AddToggle('ZombieBox',      {Text='  └ Box',        Default=true})
-Toggles.ZombieBox:OnChanged(function() Config.zombieBox = Toggles.ZombieBox.Value end)
-
-VisualsLeft:AddToggle('ZombieHealth',   {Text='  └ Health Bar',  Default=true})
-Toggles.ZombieHealth:OnChanged(function() Config.zombieHealth = Toggles.ZombieHealth.Value end)
-
-VisualsLeft:AddToggle('ZombieName',     {Text='  └ Name',        Default=true})
-Toggles.ZombieName:OnChanged(function() Config.zombieName = Toggles.ZombieName.Value end)
-
-VisualsLeft:AddToggle('ZombieDistance', {Text='  └ Distance',    Default=true})
-Toggles.ZombieDistance:OnChanged(function() Config.zombieDistance = Toggles.ZombieDistance.Value end)
-
-VisualsLeft:AddToggle('PlayerESP', {Text='Player ESP', Default=false})
-Toggles.PlayerESP:OnChanged(function()
-    Config.playerESP = Toggles.PlayerESP.Value
-    if not Config.playerESP then
+local S_PlayerESP = DrawSection(T_Visuals, 'Player ESP', 'left')
+S_PlayerESP:AddToggle({Name='Player ESP',    Flag='PlayerESP', Default=false, Callback=function(v)
+    Config.playerESP=v
+    if not v then
         for model, espData in pairs(drawingPool) do
-            if Players:GetPlayerFromCharacter(model) ~= nil then
-                RemoveDrawingESP(espData.Drawing, espData.Highlight); drawingPool[model]=nil
-            end
+            if Players:GetPlayerFromCharacter(model)~=nil then RemoveDrawingESP(espData.Drawing,espData.Highlight); drawingPool[model]=nil end
         end
     end
-end)
+end})
+S_PlayerESP:AddToggle({Name='  └ Box',      Flag='PlayerBox',      Default=true,  Callback=function(v) Config.playerBox=v end})
+S_PlayerESP:AddToggle({Name='  └ Health',   Flag='PlayerHealth',   Default=true,  Callback=function(v) Config.playerHealth=v end})
+S_PlayerESP:AddToggle({Name='  └ Name',     Flag='PlayerName',     Default=true,  Callback=function(v) Config.playerName=v end})
+S_PlayerESP:AddToggle({Name='  └ Distance', Flag='PlayerDistance', Default=true,  Callback=function(v) Config.playerDistance=v end})
 
-VisualsLeft:AddToggle('PlayerBox',      {Text='  └ Box',        Default=true})
-Toggles.PlayerBox:OnChanged(function() Config.playerBox = Toggles.PlayerBox.Value end)
+local S_ESPCfg = DrawSection(T_Visuals, 'ESP Settings', 'right')
+S_ESPCfg:AddToggle({Name='Box ESP',         Flag='UseBox',      Default=true,  Callback=function(v) Config.UseBoxESP=v end})
+S_ESPCfg:AddToggle({Name='Highlight ESP',   Flag='UseHL',       Default=false, Callback=function(v) Config.UseHighlight=v end})
+S_ESPCfg:AddToggle({Name='Tracers',         Flag='UseTracers',  Default=false, Callback=function(v) Config.UseTracers=v end})
+S_ESPCfg:AddToggle({Name='Show Names',      Flag='ShowNames',   Default=true,  Callback=function(v) Config.ShowNames=v end})
+S_ESPCfg:AddToggle({Name='Show Distance',   Flag='ShowDist',    Default=true,  Callback=function(v) Config.ShowDistance=v end})
+S_ESPCfg:AddToggle({Name='Show Health',     Flag='ShowHealth',  Default=true,  Callback=function(v) Config.ShowHealth=v end})
+S_ESPCfg:AddToggle({Name='Health Gradient', Flag='HealthGrad',  Default=true,  Callback=function(v) Config.UseHealthGradient=v end})
+S_ESPCfg:AddDropdown({Name='Box Style',     Flag='BoxStyle',    Values={'Full','Corner'},         Default='Full',  Callback=function(v) Config.BoxStyle=v end})
+S_ESPCfg:AddDropdown({Name='Health Bar',    Flag='HealthSide',  Values={'Left','Right','Bottom'}, Default='Left',  Callback=function(v) Config.HealthBarSide=v end})
+S_ESPCfg:AddSlider({Name='Max Dist (m)',    Flag='MaxDist',     Default=1000, Min=25, Max=5000, Rounding=0, Callback=function(v) Config.MaxDistance=math.floor(v*3.57) end})
 
-VisualsLeft:AddToggle('PlayerHealth',   {Text='  └ Health Bar',  Default=true})
-Toggles.PlayerHealth:OnChanged(function() Config.playerHealth = Toggles.PlayerHealth.Value end)
+local S_ESPColor = DrawSection(T_Visuals, 'ESP Colors', 'right')
+S_ESPColor:AddColorPicker({Name='Zombie Color', Flag='ZombieColor',  Default=Color3.fromRGB(255,60,60), Callback=function(v) Config.ZombieColor=v end})
+S_ESPColor:AddColorPicker({Name='Player Color', Flag='PlayerColor',  Default=Color3.fromRGB(0,200,255), Callback=function(v) Config.PlayerColor=v end})
+S_ESPColor:AddColorPicker({Name='Health Color', Flag='HealthColor',  Default=Color3.new(0,1,0),         Callback=function(v) Config.HealthBarColor=v end})
+S_ESPColor:AddToggle({Name='Override Box Color', Flag='BoxOverride', Default=false, Callback=function(v)
+    Config.BoxColor = v and (Options.BoxColor and Options.BoxColor.Value or Color3.new(1,1,1)) or nil
+end})
+S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new(1,1,1), Callback=function(v)
+    if Options.BoxOverride and Options.BoxOverride.Value then Config.BoxColor=v end
+end})
 
-VisualsLeft:AddToggle('PlayerName',     {Text='  └ Name',        Default=true})
-Toggles.PlayerName:OnChanged(function() Config.playerName = Toggles.PlayerName.Value end)
+-- UTILITY
+local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
+S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
 
-VisualsLeft:AddToggle('PlayerDistance', {Text='  └ Distance',    Default=true})
-Toggles.PlayerDistance:OnChanged(function() Config.playerDistance = Toggles.PlayerDistance.Value end)
+local S_Char = DrawSection(T_Utility, 'Character', 'right')
+S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
+S_Char:AddToggle({Name='Speed Hack',          Flag='SpeedHack',  Default=false, Callback=function(v) Config.speedHack=v end})
+S_Char:AddSlider({Name='Speed',               Flag='SpeedVal',   Default=24, Min=8, Max=100, Rounding=1, Callback=function(v) Config.speedHackValue=v end})
+S_Char:AddToggle({Name='Auto Reload',         Flag='AutoReload', Default=false, Callback=function(v) Config.autoReload=v end})
+S_Char:AddSlider({Name='Reload Interval (s)', Flag='ReloadInt',  Default=2, Min=0.5, Max=10, Rounding=1, Callback=function(v) Config.autoReloadInterval=v end})
+S_Char:AddToggle({Name='Fullbright',          Flag='Fullbright', Default=false, Callback=function(v) Config.fullbright=v end})
+S_Char:AddToggle({Name='No Fog',              Flag='NoFog',      Default=false, Callback=function(v) Config.nofog=v end})
 
--- ── VISUALS RIGHT — ESP Settings (y chang BRM5) ───────────────────────────────
-
-VisualsRight:AddToggle('ESP_Box',       {Text='Box ESP',              Default=true})
-Toggles.ESP_Box:OnChanged(function() Config.UseBoxESP = Toggles.ESP_Box.Value end)
-
-VisualsRight:AddToggle('ESP_Highlight', {Text='Highlight ESP',        Default=false})
-Toggles.ESP_Highlight:OnChanged(function() Config.UseHighlight = Toggles.ESP_Highlight.Value end)
-
-VisualsRight:AddToggle('ESP_Tracers',   {Text='Tracers',              Default=false})
-Toggles.ESP_Tracers:OnChanged(function() Config.UseTracers = Toggles.ESP_Tracers.Value end)
-
-VisualsRight:AddToggle('ESP_Names',     {Text='Show Names',           Default=true})
-Toggles.ESP_Names:OnChanged(function() Config.ShowNames = Toggles.ESP_Names.Value end)
-
-VisualsRight:AddToggle('ESP_Distance',  {Text='Show Distance',        Default=true})
-Toggles.ESP_Distance:OnChanged(function() Config.ShowDistance = Toggles.ESP_Distance.Value end)
-
-VisualsRight:AddToggle('ESP_Health',    {Text='Show Health',          Default=true})
-Toggles.ESP_Health:OnChanged(function() Config.ShowHealth = Toggles.ESP_Health.Value end)
-
-VisualsRight:AddDropdown('ESP_BoxStyle', {
-    Text='Box Style', Values={'Full','Corner'}, Default='Full',
-    Callback=function(v) Config.BoxStyle = v end
-})
-
-VisualsRight:AddDropdown('ESP_HealthSide', {
-    Text='Health Bar', Values={'Left','Right','Bottom'}, Default='Left',
-    Callback=function(v) Config.HealthBarSide = v end
-})
-
-VisualsRight:AddToggle('ESP_HealthGrad', {Text='Health Gradient',     Default=true})
-Toggles.ESP_HealthGrad:OnChanged(function() Config.UseHealthGradient = Toggles.ESP_HealthGrad.Value end)
-
-VisualsRight:AddSlider('ESP_MaxDist', {
-    Text='Max Distance (m)', Default=1000, Min=25, Max=5000, Rounding=0, Compact=false,
-    Callback=function(v) Config.MaxDistance = math.floor(v * 3.57) end
-})
-
-VisualsRight:AddColorpicker('ESP_ZombieColor', {
-    Text='Zombie Color', Default=Color3.fromRGB(255,60,60),
-    Callback=function(v) Config.ZombieColor = v end
-})
-
-VisualsRight:AddColorpicker('ESP_PlayerColor', {
-    Text='Player Color', Default=Color3.fromRGB(0,200,255),
-    Callback=function(v) Config.PlayerColor = v end
-})
-
-VisualsRight:AddColorpicker('ESP_HealthColor', {
-    Text='Health Color', Default=Color3.new(0,1,0),
-    Callback=function(v) Config.HealthBarColor = v end
-})
-
-VisualsRight:AddToggle('ESP_BoxOverride', {Text='Override Box Color', Default=false})
-Toggles.ESP_BoxOverride:OnChanged(function()
-    Config.BoxColor = Toggles.ESP_BoxOverride.Value and Options.ESP_BoxColorPick.Value or nil
-end)
-
-VisualsRight:AddColorpicker('ESP_BoxColorPick', {
-    Text='Box Color', Default=Color3.new(1,1,1),
-    Callback=function(v)
-        if Toggles.ESP_BoxOverride.Value then Config.BoxColor = v end
-    end
-})
-
--- ── VISUALS RIGHT — Environment ───────────────────────────────────────────────
-
-VisualsRight:AddToggle('Fullbright', {Text='Fullbright', Default=false})
-Toggles.Fullbright:OnChanged(function() Config.fullbright = Toggles.Fullbright.Value end)
-
-VisualsRight:AddToggle('NoFog', {Text='No Fog', Default=false})
-Toggles.NoFog:OnChanged(function() Config.nofog = Toggles.NoFog.Value end)
-
--- ── UTILITY ───────────────────────────────────────────────────────────────────
-
-UtilityLeft:AddToggle('InfiniteAmmo', {Text='Infinite Ammo', Default=false})
-Toggles.InfiniteAmmo:OnChanged(function() Config.infiniteAmmo = Toggles.InfiniteAmmo.Value end)
-
-UtilityMid:AddToggle('InfiniteStamina', {Text='Infinite Stamina', Default=false})
-Toggles.InfiniteStamina:OnChanged(function() Config.infiniteStamina = Toggles.InfiniteStamina.Value end)
-
-UtilityMid:AddToggle('SpeedHack', {Text='Speed Hack', Default=false})
-Toggles.SpeedHack:OnChanged(function() Config.speedHack = Toggles.SpeedHack.Value end)
-
-UtilityMid:AddSlider('SpeedValue', {
-    Text='Speed', Default=24, Min=8, Max=100, Rounding=1, Compact=false,
-    Callback=function(v) Config.speedHackValue = v end
-})
-
-UtilityRight:AddToggle('AutoReload', {Text='Auto Reload', Default=false})
-Toggles.AutoReload:OnChanged(function() Config.autoReload = Toggles.AutoReload.Value end)
-
-UtilityRight:AddSlider('AutoReloadInterval', {
-    Text='Interval (s)', Default=2, Min=0.5, Max=10, Rounding=1, Compact=false,
-    Callback=function(v) Config.autoReloadInterval = v end
-})
-
--- ── UI SETTINGS ───────────────────────────────────────────────────────────────
-
-local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+-- UI SETTINGS
+local MenuGroup = T_Settings:AddLeftGroupbox('Menu')
 MenuGroup:AddButton({Text='Unload', Func=function() Library:Unload() end})
 
 ThemeManager:SetLibrary(Library)
@@ -965,8 +878,8 @@ SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 ThemeManager:SetFolder('TokaihHub')
 SaveManager:SetFolder('TokaihHub/reign-fall')
-SaveManager:BuildConfigSection(Tabs['UI Settings'])
-ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:BuildConfigSection(T_Settings)
+ThemeManager:ApplyToTab(T_Settings)
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
