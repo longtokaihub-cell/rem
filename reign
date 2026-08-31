@@ -148,18 +148,6 @@ end)
 -- PlayAnimation.lua gọi track:AdjustSpeed(speed) khi reload.
 -- Reloading BoolValue nằm trong tool được equip trên character.
 
-local function isReloading()
-    local char = lp.Character
-    if not char then return false end
-    -- Reloading BoolValue nằm sâu trong tool → config_items của weapon tool
-    for _, desc in ipairs(char:GetDescendants()) do
-        if desc.Name == "Reloading" and desc:IsA("BoolValue") and desc.Value then
-            return true
-        end
-    end
-    return false
-end
-
 local function isAnimationTrack(obj)
     local ok, cn = pcall(function() return obj.ClassName end)
     return ok and cn == "AnimationTrack"
@@ -595,12 +583,12 @@ local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    -- Reload Speed: hook AdjustSpeed trên AnimationTrack khi đang reload
+    -- Reload Speed: hook AdjustSpeed trên mọi AnimationTrack
+    -- Không check isReloading() vì Reloading BoolValue nằm sâu trong controller script
+    -- Apply cho tất cả AdjustSpeed call — chỉ animation speed bị affect, không có side effect
     if Config.reloadSpeedEnabled and method == "AdjustSpeed" and isAnimationTrack(self) then
-        if isReloading() then
-            local spd = select(1, ...)
-            return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
-        end
+        local spd = select(1, ...)
+        return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
     end
 
     -- Silent Aim + No Spread
@@ -845,7 +833,7 @@ S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
 S_GunMods:AddToggle({Name='RPM Hack',          Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
-S_GunMods:AddSlider({Name='RPM',               Flag='RPMValue',      Default=600, Min=100, Max=5000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+S_GunMods:AddSlider({Name='RPM',               Flag='RPMValue',      Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
 S_GunMods:AddToggle({Name='Reload Speed',      Flag='ReloadEnabled', Default=false, Callback=function(v) Config.reloadSpeedEnabled=v end})
 S_GunMods:AddSlider({Name='Reload Multiplier', Flag='ReloadMulti',   Default=2, Min=0.1, Max=20, Rounding=1, Suffix='x', Callback=function(v) Config.reloadSpeedMultiplier=v end})
 
