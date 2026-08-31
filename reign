@@ -69,6 +69,11 @@ local Config = {
     -- World
     nofog             = false,
     fullbright        = false,
+    -- RPM & Reload
+    rpmEnabled        = false,
+    rpmMultiplier     = 2.0,   -- x lần tốc độ bắn
+    reloadSpeedEnabled = false,
+    reloadSpeedMultiplier = 2.0, -- x lần tốc độ reload
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -105,7 +110,71 @@ local function installRecoilHook()
 end
 installRecoilHook()
 
--- ─── PICKUP HIGHLIGHT UTILS ───────────────────────────────────────────────────
+-- ─── RPM HACK + RELOAD SPEED ──────────────────────────────────────────────────
+--
+-- RPM: game check `60/firerate <= tick() - LastFired.Value`
+-- LastFired là NumberValue trong config_items của weapon tool.
+-- Hook __newindex — khi game set LastFired.Value = tick() (sau mỗi shot),
+-- ta ghi lại bằng tick() - (60/firerate * rpmMultiplier) để trick cooldown check
+-- thành đã đủ thời gian ngay lập tức.
+-- Không biết firerate của từng gun → dùng cách đơn giản hơn: set value rất nhỏ
+-- để `tick() - LastFired.Value` luôn lớn hơn cooldown.
+--
+-- Reload Speed: game gọi animTrack:AdjustSpeed(speed) khi bắt đầu reload.
+-- Hook __namecall, intercept AdjustSpeed trên AnimationTrack,
+-- multiply speed nếu Reloading.Value == true trên character.
+
+local rpmHook
+local adjustSpeedHook
+
+local function getReloadingValue()
+    local char = lp.Character
+    if not char then return nil end
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then
+            local cfg = tool:FindFirstChild("Values") -- config folder
+            -- thử tìm trực tiếp trong tool children
+            local reloading = tool:FindFirstChild("Reloading", true)
+            if reloading and reloading:IsA("BoolValue") then return reloading end
+        end
+    end
+    return nil
+end
+
+local function isCharacterReloading()
+    local char = lp.Character
+    if not char then return false end
+    -- tìm Reloading BoolValue trong bất kỳ tool nào đang equipped
+    for _, obj in ipairs(char:GetDescendants()) do
+        if obj.Name == "Reloading" and obj:IsA("BoolValue") and obj.Value then
+            return true
+        end
+    end
+    return false
+end
+
+-- RPM hook: intercept LastFired NumberValue write
+rpmHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+    if Config.rpmEnabled and key == "Value"
+    and self:IsA("NumberValue") and self.Name == "LastFired" then
+        -- set LastFired rất xa trong quá khứ → cooldown check luôn pass
+        return rpmHook(self, key, 0)
+    end
+    return rpmHook(self, key, value)
+end))
+
+-- Reload speed hook: intercept AnimationTrack:AdjustSpeed
+adjustSpeedHook = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if Config.reloadSpeedEnabled and method == "AdjustSpeed" and self:IsA("AnimationTrack") then
+        if isCharacterReloading() then
+            local args = {...}
+            local originalSpeed = args[1] or 1
+            return adjustSpeedHook(self, originalSpeed * Config.reloadSpeedMultiplier)
+        end
+    end
+    return adjustSpeedHook(self, ...)
+end))
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
@@ -774,6 +843,12 @@ S_Aim:AddToggle({Name='Silent Aim',  Flag='SilentAim',  Default=false, Callback=
 S_Aim:AddToggle({Name='Auto Hit',    Flag='AutoHit',    Default=false, Callback=function(v) Config.autoHit=v end})
 S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=function(v) Config.noRecoil=v end})
 S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
+
+local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
+S_GunMods:AddToggle({Name='RPM Hack',        Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM Multiplier',  Flag='RPMMulti',      Default=2, Min=1, Max=10, Rounding=1, Suffix='x', Callback=function(v) Config.rpmMultiplier=v end})
+S_GunMods:AddToggle({Name='Reload Speed',    Flag='ReloadEnabled', Default=false, Callback=function(v) Config.reloadSpeedEnabled=v end})
+S_GunMods:AddSlider({Name='Reload Multiplier', Flag='ReloadMulti', Default=2, Min=0.1, Max=10, Rounding=1, Suffix='x', Callback=function(v) Config.reloadSpeedMultiplier=v end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
