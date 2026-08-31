@@ -71,9 +71,9 @@ local Config = {
     fullbright        = false,
     -- RPM & Reload
     rpmEnabled        = false,
-    rpmMultiplier     = 2.0,   -- x lần tốc độ bắn
+    rpmValue          = 600,   -- RPM thực tế (rounds per minute)
     reloadSpeedEnabled = false,
-    reloadSpeedMultiplier = 2.0, -- x lần tốc độ reload
+    reloadSpeedMultiplier = 2.0,
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -111,13 +111,19 @@ end
 installRecoilHook()
 
 -- ─── RPM HACK ─────────────────────────────────────────────────────────────────
--- Hook __newindex trên LastFired NumberValue — set về 0 để cooldown check luôn pass.
+-- game check: 60/firerate <= tick() - LastFired.Value
+-- Ta set LastFired = tick() - (60/Config.rpmValue) sau mỗi shot
+-- → cooldown = 60/rpm seconds → slider RPM cao = delay ngắn = bắn nhanh hơn
+-- Khi tắt: không intercept → game dùng firerate gốc bình thường
 
 local rpmHook
 rpmHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
     if Config.rpmEnabled and key == "Value"
     and self:IsA("NumberValue") and self.Name == "LastFired" then
-        return rpmHook(self, key, 0)
+        -- set LastFired = tick() - delay tương ứng với rpm đã chọn
+        -- game sẽ thấy cooldown đã pass ngay sau delay này
+        local delay = 60 / Config.rpmValue
+        return rpmHook(self, key, tick() - delay)
     end
     return rpmHook(self, key, value)
 end))
@@ -554,15 +560,23 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
     -- Reload Speed: intercept AdjustSpeed trên AnimationTrack
-    -- game gọi track:AdjustSpeed(reloadSpeed) khi bắt đầu animation reload
+    -- game gọi track:AdjustSpeed(speed) cho mọi animation, filter bằng Reloading BoolValue
     if Config.reloadSpeedEnabled and method == ADJUSTSPEED_METHOD and self:IsA("AnimationTrack") then
         local char = lp.Character
         if char then
-            for _, obj in ipairs(char:GetDescendants()) do
-                if obj.Name == "Reloading" and obj:IsA("BoolValue") and obj.Value then
-                    local spd = ... or 1
-                    return oldNamecall(self, spd * Config.reloadSpeedMultiplier)
+            -- check Reloading BoolValue trên bất kỳ tool nào trong character
+            local isReloading = false
+            for _, tool in ipairs(char:GetChildren()) do
+                if tool:IsA("Tool") then
+                    local r = tool:FindFirstChild("Reloading", true)
+                    if r and r:IsA("BoolValue") and r.Value then
+                        isReloading = true; break
+                    end
                 end
+            end
+            if isReloading then
+                local originalSpeed = select(1, ...) or 1
+                return oldNamecall(self, originalSpeed * Config.reloadSpeedMultiplier)
             end
         end
     end
@@ -810,10 +824,10 @@ S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=
 S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
-S_GunMods:AddToggle({Name='RPM Hack',        Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
-S_GunMods:AddSlider({Name='RPM Multiplier',  Flag='RPMMulti',      Default=10, Min=1, Max=1000, Rounding=0, Suffix='x', Callback=function(v) Config.rpmMultiplier=v end})
-S_GunMods:AddToggle({Name='Reload Speed',    Flag='ReloadEnabled', Default=false, Callback=function(v) Config.reloadSpeedEnabled=v end})
-S_GunMods:AddSlider({Name='Reload Multiplier', Flag='ReloadMulti', Default=2, Min=0.1, Max=20, Rounding=1, Suffix='x', Callback=function(v) Config.reloadSpeedMultiplier=v end})
+S_GunMods:AddToggle({Name='RPM Hack',          Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM',               Flag='RPMValue',      Default=600, Min=100, Max=5000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+S_GunMods:AddToggle({Name='Reload Speed',      Flag='ReloadEnabled', Default=false, Callback=function(v) Config.reloadSpeedEnabled=v end})
+S_GunMods:AddSlider({Name='Reload Multiplier', Flag='ReloadMulti',   Default=2, Min=0.1, Max=20, Rounding=1, Suffix='x', Callback=function(v) Config.reloadSpeedMultiplier=v end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
