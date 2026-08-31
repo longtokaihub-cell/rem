@@ -111,22 +111,56 @@ end
 installRecoilHook()
 
 -- ─── RPM HACK ─────────────────────────────────────────────────────────────────
--- game check: 60/firerate <= tick() - LastFired.Value
--- Ta set LastFired = tick() - (60/Config.rpmValue) sau mỗi shot
--- → cooldown = 60/rpm seconds → slider RPM cao = delay ngắn = bắn nhanh hơn
--- Khi tắt: không intercept → game dùng firerate gốc bình thường
+-- CoreConfig là folder được clone vào MAIN_CoreViewmodelController mỗi lần equip.
+-- LastFired NumberValue trong đó được game set = tick() sau mỗi shot.
+-- Ta tìm nó và set về tick() - delay tương ứng RPM trong một loop riêng.
+-- Không hook __newindex vì game set .Value trực tiếp không qua metamethod của ta.
 
-local rpmHook
-rpmHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
-    if Config.rpmEnabled and key == "Value"
-    and self:IsA("NumberValue") and self.Name == "LastFired" then
-        -- set LastFired = tick() - delay tương ứng với rpm đã chọn
-        -- game sẽ thấy cooldown đã pass ngay sau delay này
-        local delay = 60 / Config.rpmValue
-        return rpmHook(self, key, tick() - delay)
+local function findLastFired()
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local scripts = pg:FindFirstChild("Scripts")
+    if not scripts then return nil end
+    local game_folder = scripts:FindFirstChild("Game")
+    if not game_folder then return nil end
+    local mvc = game_folder:FindFirstChild("MAIN_CoreViewmodelController")
+    if not mvc then return nil end
+    local coreConfig = mvc:FindFirstChild("CoreConfig")
+    if not coreConfig then return nil end
+    return coreConfig:FindFirstChild("LastFired")
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+        if Config.rpmEnabled then
+            local lastFired = findLastFired()
+            if lastFired then
+                local delay = 60 / Config.rpmValue
+                -- force LastFired đủ xa trong quá khứ để cooldown check luôn pass
+                lastFired.Value = tick() - delay - 0.001
+            end
+        end
     end
-    return rpmHook(self, key, value)
-end))
+end)
+
+-- ─── RELOAD SPEED ─────────────────────────────────────────────────────────────
+-- PlayAnimation.lua gọi track:Play(fadeTime, weight, speed) rồi track:AdjustSpeed(speed).
+-- Hook __namecall: intercept cả Play lẫn AdjustSpeed trên AnimationTrack.
+-- Filter bằng tên animation chứa "reload" hoặc Reloading BoolValue trong CoreConfig.
+
+local function isReloading()
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return false end
+    local scripts = pg:FindFirstChild("Scripts")
+    if not scripts then return false end
+    local mvc = scripts:FindFirstChild("Game") and scripts.Game:FindFirstChild("MAIN_CoreViewmodelController")
+    if not mvc then return false end
+    local coreConfig = mvc:FindFirstChild("CoreConfig")
+    if not coreConfig then return false end
+    local r = coreConfig:FindFirstChild("Reloading")
+    return r and r:IsA("BoolValue") and r.Value == true
+end
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
@@ -554,29 +588,19 @@ end)
 -- ─── NAMECALL HOOK (Silent Aim + No Spread) ───────────────────────────────────
 
 local RAYCAST_METHOD = "Raycast"
-local ADJUSTSPEED_METHOD = "AdjustSpeed"
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    -- Reload Speed: intercept AdjustSpeed trên AnimationTrack
-    -- game gọi track:AdjustSpeed(speed) cho mọi animation, filter bằng Reloading BoolValue
-    if Config.reloadSpeedEnabled and method == ADJUSTSPEED_METHOD and self:IsA("AnimationTrack") then
-        local char = lp.Character
-        if char then
-            -- check Reloading BoolValue trên bất kỳ tool nào trong character
-            local isReloading = false
-            for _, tool in ipairs(char:GetChildren()) do
-                if tool:IsA("Tool") then
-                    local r = tool:FindFirstChild("Reloading", true)
-                    if r and r:IsA("BoolValue") and r.Value then
-                        isReloading = true; break
-                    end
-                end
-            end
-            if isReloading then
-                local originalSpeed = select(1, ...) or 1
-                return oldNamecall(self, originalSpeed * Config.reloadSpeedMultiplier)
+    -- Reload Speed: hook Play và AdjustSpeed trên AnimationTrack
+    if Config.reloadSpeedEnabled and self:IsA("AnimationTrack") then
+        if (method == "AdjustSpeed" or method == "Play") and isReloading() then
+            if method == "AdjustSpeed" then
+                local spd = select(1, ...)
+                return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
+            elseif method == "Play" then
+                local fadeTime, weight, spd = ...
+                return oldNamecall(self, fadeTime, weight, (spd or 1) * Config.reloadSpeedMultiplier)
             end
         end
     end
@@ -588,9 +612,7 @@ oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local doSpread = Config.noSpread
             local doSilent = Config.raycasting and target.position ~= nil
             if doSpread or doSilent then
-                if doSpread then
-                    dir = camera.CFrame.LookVector * dir.Magnitude
-                end
+                if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
                 if doSilent then
                     local toTarget = target.position - origin
                     if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
