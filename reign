@@ -145,21 +145,24 @@ task.spawn(function()
 end)
 
 -- ─── RELOAD SPEED ─────────────────────────────────────────────────────────────
--- PlayAnimation.lua gọi track:Play(fadeTime, weight, speed) rồi track:AdjustSpeed(speed).
--- Hook __namecall: intercept cả Play lẫn AdjustSpeed trên AnimationTrack.
--- Filter bằng tên animation chứa "reload" hoặc Reloading BoolValue trong CoreConfig.
+-- PlayAnimation.lua gọi track:AdjustSpeed(speed) khi reload.
+-- Reloading BoolValue nằm trong tool được equip trên character.
 
 local function isReloading()
-    local pg = lp:FindFirstChild("PlayerGui")
-    if not pg then return false end
-    local scripts = pg:FindFirstChild("Scripts")
-    if not scripts then return false end
-    local mvc = scripts:FindFirstChild("Game") and scripts.Game:FindFirstChild("MAIN_CoreViewmodelController")
-    if not mvc then return false end
-    local coreConfig = mvc:FindFirstChild("CoreConfig")
-    if not coreConfig then return false end
-    local r = coreConfig:FindFirstChild("Reloading")
-    return r and r:IsA("BoolValue") and r.Value == true
+    local char = lp.Character
+    if not char then return false end
+    -- Reloading BoolValue nằm sâu trong tool → config_items của weapon tool
+    for _, desc in ipairs(char:GetDescendants()) do
+        if desc.Name == "Reloading" and desc:IsA("BoolValue") and desc.Value then
+            return true
+        end
+    end
+    return false
+end
+
+local function isAnimationTrack(obj)
+    local ok, cn = pcall(function() return obj.ClassName end)
+    return ok and cn == "AnimationTrack"
 end
 
 local function AddHighlight(obj, color, transparency)
@@ -592,16 +595,11 @@ local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    -- Reload Speed: hook Play và AdjustSpeed trên AnimationTrack
-    if Config.reloadSpeedEnabled and self:IsA("AnimationTrack") then
-        if (method == "AdjustSpeed" or method == "Play") and isReloading() then
-            if method == "AdjustSpeed" then
-                local spd = select(1, ...)
-                return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
-            elseif method == "Play" then
-                local fadeTime, weight, spd = ...
-                return oldNamecall(self, fadeTime, weight, (spd or 1) * Config.reloadSpeedMultiplier)
-            end
+    -- Reload Speed: hook AdjustSpeed trên AnimationTrack khi đang reload
+    if Config.reloadSpeedEnabled and method == "AdjustSpeed" and isAnimationTrack(self) then
+        if isReloading() then
+            local spd = select(1, ...)
+            return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
         end
     end
 
