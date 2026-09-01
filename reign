@@ -874,7 +874,8 @@ local function WrapSection(Groupbox)
         local Flag = tostring(Data.Flag or Data.Name or "C")
         local label = Groupbox:AddLabel(tostring(Data.Name or Flag))
         label:AddColorPicker(Flag, {Default=Data.Default or Color3.new(1,1,1)})
-        if Data.Callback and Options[Flag] then Options[Flag]:OnChanged(Data.Callback) end
+        local opts = getgenv().Options
+        if Data.Callback and opts and opts[Flag] then opts[Flag]:OnChanged(Data.Callback) end
     end
     function S:AddButton(Data)
         return Groupbox:AddButton(Data.Name or "Button", Data.Callback or function() end)
@@ -1499,10 +1500,10 @@ S_ESPColor:AddColorPicker({Name='Zombie Color', Flag='ZombieColor',  Default=Col
 S_ESPColor:AddColorPicker({Name='Player Color', Flag='PlayerColor',  Default=Color3.fromRGB(0,200,255), Callback=function(v) Config.PlayerColor=v end})
 S_ESPColor:AddColorPicker({Name='Health Color', Flag='HealthColor',  Default=Color3.new(0,1,0),         Callback=function(v) Config.HealthBarColor=v end})
 S_ESPColor:AddToggle({Name='Override Box Color', Flag='BoxOverride', Default=false, Callback=function(v)
-    Config.BoxColor = v and (Options.BoxColor and Options.BoxColor.Value or Color3.new(1,1,1)) or nil
+    Config.BoxColor = v and (getgenv().Options and getgenv().Options.BoxColor and getgenv().Options.BoxColor.Value or Color3.new(1,1,1)) or nil
 end})
 S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new(1,1,1), Callback=function(v)
-    if Options.BoxOverride and Options.BoxOverride.Value then Config.BoxColor=v end
+    if getgenv().Options and getgenv().Options.BoxOverride and getgenv().Options.BoxOverride.Value then Config.BoxColor=v end
 end})
 
 -- UTILITY
