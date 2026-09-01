@@ -828,14 +828,524 @@ local function DrawSection(Tab, Name, Position)
     return WrapSection(Tab:AddLeftGroupbox(Name))
 end
 
+-- ─── AIMBOT ENGINE (từ InoC3nt8 aimbot script) ───────────────────────────────
+
+local TweenService  = game:GetService("TweenService")
+local CoreGui       = game:GetService("CoreGui")
+
+pcall(function()
+    if getgenv().TokaiAimbot and getgenv().TokaiAimbot.Exit then
+        getgenv().TokaiAimbot.Exit()
+    end
+end)
+
+getgenv().TokaiAimbot = {}
+local Aim = getgenv().TokaiAimbot
+
+local AimConnections = {}
+local AimRunning = false
+local AimAnimation = nil
+local AimTyping = false
+
+-- NPC cache
+local aimNPCFolder = nil
+local aimNPCFolderTime = 0
+local AIM_NPC_CACHE = 2
+
+-- Invisible mode
+local invisActive = false
+local invisHBConn = nil
+local invisCharConn = nil
+local invisParts = {}
+local invisChar = nil
+local invisHuman = nil
+local invisRoot = nil
+
+local aimbotBodyParts = {
+    "Head","UpperTorso","LowerTorso","HumanoidRootPart",
+    "LeftUpperArm","LeftLowerArm","LeftHand",
+    "RightUpperArm","RightLowerArm","RightHand",
+    "LeftUpperLeg","LeftLowerLeg","LeftFoot",
+    "RightUpperLeg","RightLowerLeg","RightFoot"
+}
+
+Aim.Settings = {
+    Enabled          = false,
+    TeamCheck        = false,
+    AliveCheck       = true,
+    WallCheck        = false,
+    Sensitivity      = 0,
+    SmoothAim        = false,
+    ThirdPerson      = false,
+    ThirdPersonSens  = 3,
+    TriggerKey       = "MouseButton2",
+    Toggle           = false,
+    LockPart         = "Head",
+    PredictionEnabled= false,
+    Prediction       = 0.14,
+    TargetMode       = "Zombies",
+    ForceConnect     = true,
+    HighlightVisible = false,
+    MaxDistance      = 500,
+    DistanceCircleVisible = false,
+    InvisibleEnabled = false,
+    InvisibleKey     = "CapsLock",
+    InvisibleOffsetY = 100,
+}
+
+Aim.FOV = {
+    Enabled     = true,
+    Visible     = true,
+    Amount      = 90,
+    Color       = Color3.fromRGB(255,255,255),
+    LockedColor = Color3.fromRGB(255,70,70),
+    Transparency= 0.5,
+    Sides       = 60,
+    Thickness   = 1,
+    Filled      = false,
+}
+
+Aim.IgnoreList = {}
+Aim.Locked     = nil
+
+Aim.FOVCircle = Drawing.new("Circle")
+
+-- Distance ring
+local aimDistPart, aimDistAttach, aimDistBeams = nil, nil, nil
+
+local function EnsureDistRing(seg)
+    seg = seg or 48
+    if aimDistPart and aimDistAttach and aimDistBeams and #aimDistAttach == seg then return end
+    pcall(function() if aimDistPart then aimDistPart:Destroy() end end)
+    aimDistPart = Instance.new("Part")
+    aimDistPart.Anchored=true; aimDistPart.CanCollide=false
+    aimDistPart.Transparency=1; aimDistPart.Size=Vector3.new(1,1,1)
+    aimDistPart.Parent=workspace
+    aimDistAttach = {}; aimDistBeams = {}
+    for i=1,seg do
+        local a=Instance.new("Attachment"); a.Parent=aimDistPart
+        aimDistAttach[i]=a
+    end
+    for i=1,seg do
+        local b=Instance.new("Beam")
+        b.Attachment0=aimDistAttach[i]; b.Attachment1=aimDistAttach[(i%seg)+1]
+        b.FaceCamera=true; b.LightEmission=1; b.LightInfluence=0
+        b.Width0=0.15; b.Width1=0.15
+        b.Transparency=NumberSequence.new(0.35)
+        b.Color=ColorSequence.new(Color3.fromRGB(60,180,90))
+        b.Enabled=false; b.Parent=aimDistPart
+        aimDistBeams[i]=b
+    end
+end
+
+local function AimGetLocalRoot()
+    local c=lp.Character; if not c then return nil end
+    return c:FindFirstChild("HumanoidRootPart")
+end
+
+local function AimGetLockedChar()
+    if Aim.Locked then
+        if Aim.Settings.TargetMode=="Zombies" then return Aim.Locked end
+        return Aim.Locked.Character
+    end
+    return nil
+end
+
+local AimHighlight = nil
+local function AimSetHighlight(char)
+    if not Aim.Settings.HighlightVisible then
+        if AimHighlight then AimHighlight.Enabled=false end; return
+    end
+    if not char then if AimHighlight then AimHighlight.Enabled=false end; return end
+    if not AimHighlight then
+        pcall(function()
+            AimHighlight=Instance.new("Highlight")
+            AimHighlight.Name="TokaiAimHL"
+            AimHighlight.FillTransparency=1; AimHighlight.OutlineTransparency=0
+            AimHighlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+            AimHighlight.Parent=workspace
+        end)
+    end
+    if AimHighlight then
+        AimHighlight.Adornee=char
+        AimHighlight.OutlineColor=Aim.FOV.LockedColor
+        AimHighlight.Enabled=true
+    end
+end
+
+local function AimCancelLock()
+    Aim.Locked=nil
+    if AimAnimation then AimAnimation:Cancel() end
+    Aim.FOVCircle.Color=Aim.FOV.Color
+    AimSetHighlight(nil)
+end
+
+local function AimPredict(char, mul)
+    if not Aim.Settings.PredictionEnabled then return nil end
+    local root=char:FindFirstChild("HumanoidRootPart")
+    if root and type(mul)=="number" and mul>0 then
+        return root.Position + root.Velocity*mul
+    end
+    return nil
+end
+
+local function AimGetClosestPartPos(char)
+    local mousePt=UserInputService:GetMouseLocation()
+    local bestDist,bestPos=math.huge,nil
+    local root=char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local predRoot=AimPredict(char,Aim.Settings.Prediction)
+    for _,pn in ipairs(aimbotBodyParts) do
+        local part=char:FindFirstChild(pn)
+        if part then
+            local pos=part.Position
+            if predRoot then pos=predRoot+(pos-root.Position) end
+            local v,on=camera:WorldToViewportPoint(pos)
+            if on then
+                local d=(Vector2.new(mousePt.X,mousePt.Y)-Vector2.new(v.X,v.Y)).Magnitude
+                if d<bestDist then bestDist=d; bestPos=pos end
+            end
+        end
+    end
+    return bestPos or root.Position
+end
+
+local AimReqDist = 2000
+
+local function AimGetClosestPlayer()
+    if not Aim.Locked then
+        AimReqDist = Aim.FOV.Enabled and Aim.FOV.Amount or 2000
+        local localRoot=AimGetLocalRoot()
+        local localPos=localRoot and localRoot.Position
+        for _,v in next,Players:GetPlayers() do
+            if v~=lp and not Aim.IgnoreList[v] then
+                if v.Character and v.Character:FindFirstChildOfClass("Humanoid") then
+                    if Aim.Settings.TeamCheck and v.Team==lp.Team then continue end
+                    if Aim.Settings.AliveCheck and v.Character:FindFirstChildOfClass("Humanoid").Health<=0 then continue end
+                    if localPos then
+                        local tr=v.Character:FindFirstChild("HumanoidRootPart")
+                        if tr and type(Aim.Settings.MaxDistance)=="number" and Aim.Settings.MaxDistance>0 then
+                            if (tr.Position-localPos).Magnitude>Aim.Settings.MaxDistance then continue end
+                        end
+                    end
+                    local aimPos
+                    if Aim.Settings.LockPart=="DirectTouch" then
+                        aimPos=AimGetClosestPartPos(v.Character); if not aimPos then continue end
+                    else
+                        if not v.Character:FindFirstChild(Aim.Settings.LockPart) then continue end
+                        local part=v.Character[Aim.Settings.LockPart]
+                        aimPos=part.Position
+                        local root=v.Character:FindFirstChild("HumanoidRootPart")
+                        local pred=AimPredict(v.Character,Aim.Settings.Prediction)
+                        if root and pred then aimPos=pred+(aimPos-root.Position) end
+                        if Aim.Settings.WallCheck and #camera:GetPartsObscuringTarget({aimPos},v.Character:GetDescendants())>0 then continue end
+                    end
+                    local vec,on=camera:WorldToViewportPoint(aimPos)
+                    local ml=UserInputService:GetMouseLocation()
+                    local d=(Vector2.new(ml.X,ml.Y)-Vector2.new(vec.X,vec.Y)).Magnitude
+                    if d<AimReqDist and on then AimReqDist=d; Aim.Locked=v end
+                end
+            end
+        end
+    else
+        if not Aim.Locked.Character or not Aim.Locked.Character:FindFirstChildOfClass("Humanoid") then AimCancelLock(); return end
+        if Aim.Settings.AliveCheck and Aim.Locked.Character:FindFirstChildOfClass("Humanoid").Health<=0 then AimCancelLock(); return end
+        if Aim.Settings.ForceConnect then return end
+        local checkPos
+        if Aim.Settings.LockPart=="DirectTouch" then
+            checkPos=AimGetClosestPartPos(Aim.Locked.Character); if not checkPos then AimCancelLock(); return end
+        else
+            local part=Aim.Locked.Character:FindFirstChild(Aim.Settings.LockPart)
+            if not part then AimCancelLock(); return end
+            checkPos=part.Position
+            local root=Aim.Locked.Character:FindFirstChild("HumanoidRootPart")
+            local pred=AimPredict(Aim.Locked.Character,Aim.Settings.Prediction)
+            if root and pred then checkPos=pred+(checkPos-root.Position) end
+        end
+        local vec,_=camera:WorldToViewportPoint(checkPos)
+        local ml=UserInputService:GetMouseLocation()
+        if (Vector2.new(ml.X,ml.Y)-Vector2.new(vec.X,vec.Y)).Magnitude>AimReqDist then AimCancelLock() end
+    end
+end
+
+local function AimGetClosestZombie()
+    if not Aim.Locked then
+        AimReqDist = Aim.FOV.Enabled and Aim.FOV.Amount or 2000
+        local localRoot=AimGetLocalRoot()
+        local localPos=localRoot and localRoot.Position
+        local now=tick()
+        if not aimNPCFolder or (now-aimNPCFolderTime)>AIM_NPC_CACHE then
+            local gf=workspace:FindFirstChild("Game")
+            aimNPCFolder=gf and gf:FindFirstChild("Current") and gf.Current:FindFirstChild("Spawned") and gf.Current.Spawned:FindFirstChild("NPCs")
+            aimNPCFolderTime=now
+        end
+        if not aimNPCFolder or not aimNPCFolder.Parent then aimNPCFolder=nil; return end
+        local ml=UserInputService:GetMouseLocation()
+        local maxD=type(Aim.Settings.MaxDistance)=="number" and Aim.Settings.MaxDistance>0 and Aim.Settings.MaxDistance or nil
+        for _,folder in ipairs(aimNPCFolder:GetChildren()) do
+            if folder.Name=="friendlies" then continue end
+            for _,zombie in ipairs(folder:GetChildren()) do
+                if not zombie:IsA("Model") then continue end
+                if not zombie:FindFirstChild("HumanoidRootPart") then continue end
+                local hum=zombie:FindFirstChildOfClass("Humanoid")
+                if not hum then continue end
+                if Aim.IgnoreList[zombie] then continue end
+                if Aim.Settings.AliveCheck and hum.Health<=0 then continue end
+                local tr=zombie:FindFirstChild("HumanoidRootPart")
+                if maxD and localPos and (tr.Position-localPos).Magnitude>maxD then continue end
+                local aimPos
+                if Aim.Settings.LockPart=="DirectTouch" then
+                    aimPos=AimGetClosestPartPos(zombie); if not aimPos then continue end
+                else
+                    local part=zombie:FindFirstChild(Aim.Settings.LockPart)
+                    if not part then continue end
+                    aimPos=part.Position
+                    if Aim.Settings.PredictionEnabled then
+                        local root=zombie:FindFirstChild("HumanoidRootPart")
+                        local pred=AimPredict(zombie,Aim.Settings.Prediction)
+                        if root and pred then aimPos=pred+(aimPos-root.Position) end
+                    end
+                    if Aim.Settings.WallCheck and #camera:GetPartsObscuringTarget({aimPos},zombie:GetDescendants())>0 then continue end
+                end
+                local vec,on=camera:WorldToViewportPoint(aimPos)
+                local d=(Vector2.new(ml.X,ml.Y)-Vector2.new(vec.X,vec.Y)).Magnitude
+                if d<AimReqDist and on then AimReqDist=d; Aim.Locked=zombie end
+            end
+        end
+    else
+        if not Aim.Locked.Parent or not Aim.Locked:FindFirstChildOfClass("Humanoid") then AimCancelLock(); return end
+        if Aim.Settings.AliveCheck and Aim.Locked:FindFirstChildOfClass("Humanoid").Health<=0 then AimCancelLock(); return end
+        if Aim.Settings.ForceConnect then return end
+        local checkPos
+        if Aim.Settings.LockPart=="DirectTouch" then
+            checkPos=AimGetClosestPartPos(Aim.Locked); if not checkPos then AimCancelLock(); return end
+        else
+            local part=Aim.Locked:FindFirstChild(Aim.Settings.LockPart)
+            if not part then AimCancelLock(); return end
+            checkPos=part.Position
+            local root=Aim.Locked:FindFirstChild("HumanoidRootPart")
+            local pred=AimPredict(Aim.Locked,Aim.Settings.Prediction)
+            if root and pred then checkPos=pred+(checkPos-root.Position) end
+        end
+        local vec,_=camera:WorldToViewportPoint(checkPos)
+        local ml=UserInputService:GetMouseLocation()
+        if (Vector2.new(ml.X,ml.Y)-Vector2.new(vec.X,vec.Y)).Magnitude>AimReqDist then AimCancelLock() end
+    end
+end
+
+-- Invisible mode
+local function setupInvis()
+    invisChar=lp.Character or lp.CharacterAdded:Wait()
+    invisHuman=invisChar:WaitForChild("Humanoid")
+    invisRoot=invisChar:WaitForChild("HumanoidRootPart")
+    invisParts={}
+    for _,obj in pairs(invisChar:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Transparency==0 then
+            table.insert(invisParts,obj)
+        end
+    end
+end
+
+local function startInvis()
+    if invisActive then return end
+    invisActive=true
+    pcall(setupInvis)
+    for _,p in pairs(invisParts) do if p and p.Parent then p.Transparency=0.5 end end
+    invisHBConn=RunService.Heartbeat:Connect(function()
+        if invisActive and invisRoot and invisRoot.Parent and invisHuman and invisHuman.Parent then
+            pcall(function()
+                local cf=invisRoot.CFrame
+                local co=invisHuman.CameraOffset
+                local off=Aim.Settings.InvisibleOffsetY or 100
+                invisRoot.CFrame=cf*CFrame.new(0,off,0)
+                invisHuman.CameraOffset=(cf*CFrame.new(0,off,0)):ToObjectSpace(CFrame.new(cf.Position)).Position
+                RunService.RenderStepped:Wait()
+                invisRoot.CFrame=cf
+                invisHuman.CameraOffset=co
+            end)
+        end
+    end)
+    invisCharConn=lp.CharacterAdded:Connect(function()
+        task.wait(0.5); invisActive=false; pcall(setupInvis); invisActive=true
+    end)
+end
+
+local function stopInvis()
+    invisActive=false
+    if invisHBConn then invisHBConn:Disconnect(); invisHBConn=nil end
+    if invisCharConn then invisCharConn:Disconnect(); invisCharConn=nil end
+    for _,p in pairs(invisParts) do if p and p.Parent then p.Transparency=0 end end
+    invisParts={}
+    pcall(function() if invisHuman and invisHuman.Parent then invisHuman.CameraOffset=Vector3.new(0,0,0) end end)
+end
+
+-- Main aimbot loop
+AimConnections.TextFocus=UserInputService.TextBoxFocused:Connect(function() AimTyping=true end)
+AimConnections.TextUnfocus=UserInputService.TextBoxFocusReleased:Connect(function() AimTyping=false end)
+
+AimConnections.RenderStepped=RunService.RenderStepped:Connect(function()
+    -- FOV circle
+    if Aim.FOV.Enabled and Aim.Settings.Enabled then
+        local ml=UserInputService:GetMouseLocation()
+        Aim.FOVCircle.Radius=Aim.FOV.Amount
+        Aim.FOVCircle.Thickness=Aim.FOV.Thickness
+        Aim.FOVCircle.Filled=Aim.FOV.Filled
+        Aim.FOVCircle.NumSides=Aim.FOV.Sides
+        Aim.FOVCircle.Color=Aim.FOV.Color
+        Aim.FOVCircle.Transparency=Aim.FOV.Transparency
+        Aim.FOVCircle.Visible=Aim.FOV.Visible
+        Aim.FOVCircle.Position=Vector2.new(ml.X,ml.Y)
+    else
+        Aim.FOVCircle.Visible=false
+    end
+
+    if AimRunning and Aim.Settings.Enabled then
+        if Aim.Settings.TargetMode=="Zombies" then AimGetClosestZombie()
+        else AimGetClosestPlayer() end
+
+        if Aim.Locked then
+            local lockedChar=AimGetLockedChar()
+            if not lockedChar then AimSetHighlight(nil)
+            else
+                if Aim.Settings.HighlightVisible then AimSetHighlight(lockedChar) else AimSetHighlight(nil) end
+                local aimPos
+                if Aim.Settings.LockPart=="DirectTouch" then
+                    aimPos=AimGetClosestPartPos(lockedChar)
+                else
+                    local part=lockedChar:FindFirstChild(Aim.Settings.LockPart)
+                    if not part then AimCancelLock(); AimSetHighlight(nil); return end
+                    aimPos=part.Position
+                    local root=lockedChar:FindFirstChild("HumanoidRootPart")
+                    local pred=AimPredict(lockedChar,Aim.Settings.Prediction)
+                    if root and pred then aimPos=pred+(aimPos-root.Position) end
+                end
+                if Aim.Settings.ThirdPerson then
+                    local v=camera:WorldToViewportPoint(aimPos)
+                    local ml=UserInputService:GetMouseLocation()
+                    local s=math.clamp(Aim.Settings.ThirdPersonSens,0.1,5)
+                    mousemoverel and mousemoverel((v.X-ml.X)*s,(v.Y-ml.Y)*s)
+                else
+                    if Aim.Settings.SmoothAim and Aim.Settings.Sensitivity==0 then
+                        camera.CFrame=camera.CFrame:Lerp(CFrame.new(camera.CFrame.Position,aimPos),0.15)
+                    elseif Aim.Settings.Sensitivity>0 then
+                        AimAnimation=TweenService:Create(camera,TweenInfo.new(Aim.Settings.Sensitivity,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{CFrame=CFrame.new(camera.CFrame.Position,aimPos)})
+                        AimAnimation:Play()
+                    else
+                        camera.CFrame=CFrame.new(camera.CFrame.Position,aimPos)
+                    end
+                end
+                Aim.FOVCircle.Color=Aim.FOV.LockedColor
+            end
+        else AimSetHighlight(nil) end
+    else AimSetHighlight(nil) end
+
+    -- Distance ring
+    local root=AimGetLocalRoot()
+    local visible=Aim.Settings.DistanceCircleVisible and type(Aim.Settings.MaxDistance)=="number" and Aim.Settings.MaxDistance>0
+    if visible and root then
+        EnsureDistRing(48)
+        local hum=lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+        local yOff=hum and -(hum.HipHeight+1) or -3
+        aimDistPart.CFrame=CFrame.new(root.Position+Vector3.new(0,yOff,0))
+        local r=Aim.Settings.MaxDistance; local seg=#aimDistAttach
+        for i=1,seg do
+            local t=(i/seg)*(math.pi*2)
+            aimDistAttach[i].Position=Vector3.new(math.cos(t)*r,0,math.sin(t)*r)
+        end
+        for _,b in ipairs(aimDistBeams) do b.Enabled=true end
+    else
+        if aimDistBeams then for _,b in ipairs(aimDistBeams) do b.Enabled=false end end
+    end
+end)
+
+AimConnections.InputBegan=UserInputService.InputBegan:Connect(function(input)
+    if AimTyping then return end
+    pcall(function()
+        local k=Aim.Settings.TriggerKey
+        local match=(k=="MouseButton2" and input.UserInputType==Enum.UserInputType.MouseButton2)
+            or (k=="MouseButton1" and input.UserInputType==Enum.UserInputType.MouseButton1)
+            or (k=="Q" and input.KeyCode==Enum.KeyCode.Q)
+        if match then
+            if Aim.Settings.Toggle then AimRunning=not AimRunning; if not AimRunning then AimCancelLock() end
+            else AimRunning=true end
+        end
+        -- invisible keybind
+        local ik=Aim.Settings.InvisibleKey
+        local imatch=(ik=="MouseButton1" and input.UserInputType==Enum.UserInputType.MouseButton1)
+            or (ik=="MouseButton2" and input.UserInputType==Enum.UserInputType.MouseButton2)
+            or (input.UserInputType==Enum.UserInputType.Keyboard and input.KeyCode.Name==ik)
+        if imatch then
+            Aim.Settings.InvisibleEnabled=not Aim.Settings.InvisibleEnabled
+            if Aim.Settings.InvisibleEnabled then startInvis() else stopInvis() end
+        end
+    end)
+end)
+
+AimConnections.InputEnded=UserInputService.InputEnded:Connect(function(input)
+    if AimTyping or Aim.Settings.Toggle then return end
+    pcall(function()
+        local k=Aim.Settings.TriggerKey
+        local match=(k=="MouseButton2" and input.UserInputType==Enum.UserInputType.MouseButton2)
+            or (k=="MouseButton1" and input.UserInputType==Enum.UserInputType.MouseButton1)
+            or (k=="Q" and input.KeyCode==Enum.KeyCode.Q)
+        if match then AimRunning=false; AimCancelLock() end
+    end)
+end)
+
+lp.CharacterAdded:Connect(function() AimCancelLock() end)
+
+Aim.Exit = function()
+    stopInvis()
+    for _,c in next,AimConnections do pcall(function() c:Disconnect() end) end
+    pcall(function() Aim.FOVCircle:Remove() end)
+    pcall(function() if AimHighlight then AimHighlight:Destroy() end end)
+    pcall(function() if aimDistPart then aimDistPart:Destroy() end end)
+    getgenv().TokaiAimbot=nil
+end
+
 local Window = Library:CreateWindow({Title='Tokai HUB - Reign Fall', Center=true, AutoShow=true, TabPadding=8, MenuFadeTime=0.2})
+local T_Aimbot  = Window:AddTab('Aimbot')
 local T_Combat  = Window:AddTab('Combat')
 local T_Visuals = Window:AddTab('Visuals')
 local T_Utility = Window:AddTab('Utility')
 local T_Settings = Window:AddTab('UI Settings')
 
--- COMBAT
-local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
+-- ── AIMBOT TAB ────────────────────────────────────────────────────────────────
+
+local S_AimMain = DrawSection(T_Aimbot, 'Aimbot', 'left')
+S_AimMain:AddToggle({Name='Enable Aimbot',     Flag='AimEnabled',    Default=false, Callback=function(v) Aim.Settings.Enabled=v end})
+S_AimMain:AddToggle({Name='Toggle Mode',       Flag='AimToggle',     Default=false, Callback=function(v) Aim.Settings.Toggle=v end})
+S_AimMain:AddToggle({Name='FOV Visible',       Flag='AimFOVVisible', Default=true,  Callback=function(v) Aim.FOV.Visible=v end})
+S_AimMain:AddToggle({Name='Team Check',        Flag='AimTeamCheck',  Default=false, Callback=function(v) Aim.Settings.TeamCheck=v end})
+S_AimMain:AddToggle({Name='Wall Check',        Flag='AimWallCheck',  Default=false, Callback=function(v) Aim.Settings.WallCheck=v end})
+S_AimMain:AddToggle({Name='Force Connect',     Flag='AimForce',      Default=true,  Callback=function(v) Aim.Settings.ForceConnect=v end})
+S_AimMain:AddToggle({Name='Highlight Target',  Flag='AimHighlight',  Default=false, Callback=function(v) Aim.Settings.HighlightVisible=v end})
+S_AimMain:AddToggle({Name='Smooth Aim',        Flag='AimSmooth',     Default=false, Callback=function(v) Aim.Settings.SmoothAim=v end})
+S_AimMain:AddToggle({Name='Prediction',        Flag='AimPredEn',     Default=false, Callback=function(v) Aim.Settings.PredictionEnabled=v end})
+S_AimMain:AddSlider({Name='Pred Value',        Flag='AimPredVal',    Default=14, Min=0, Max=30, Rounding=0, Callback=function(v) Aim.Settings.Prediction=v/100 end})
+S_AimMain:AddSlider({Name='Sensitivity',       Flag='AimSens',       Default=0, Min=0, Max=500, Rounding=0, Callback=function(v) Aim.Settings.Sensitivity=v/100 end})
+S_AimMain:AddSlider({Name='FOV Amount',        Flag='AimFOVAmt',     Default=90, Min=10, Max=1000, Rounding=0, Callback=function(v) Aim.FOV.Amount=v end})
+S_AimMain:AddSlider({Name='Max Distance',      Flag='AimMaxDist',    Default=500, Min=50, Max=2000, Rounding=0, Callback=function(v) Aim.Settings.MaxDistance=v end})
+S_AimMain:AddToggle({Name='Distance Circle',   Flag='AimDistCircle', Default=false, Callback=function(v) Aim.Settings.DistanceCircleVisible=v end})
+
+local S_AimCfg = DrawSection(T_Aimbot, 'Configuration', 'right')
+S_AimCfg:AddDropdown({Name='Target Mode',  Flag='AimTargetMode', Values={'Zombies','Players'},         Default='Zombies', Callback=function(v) Aim.Settings.TargetMode=v; AimCancelLock() end})
+S_AimCfg:AddDropdown({Name='Lock Part',    Flag='AimLockPart',   Values={'Head','HumanoidRootPart','DirectTouch'}, Default='Head', Callback=function(v) Aim.Settings.LockPart=v end})
+S_AimCfg:AddDropdown({Name='Trigger Key',  Flag='AimKey',        Values={'MouseButton2','MouseButton1','Q'}, Default='MouseButton2', Callback=function(v) Aim.Settings.TriggerKey=v end})
+S_AimCfg:AddToggle({Name='Third Person',   Flag='AimThird',      Default=false, Callback=function(v) Aim.Settings.ThirdPerson=v end})
+S_AimCfg:AddSlider({Name='3P Sensitivity', Flag='AimThirdSens',  Default=3, Min=1, Max=10, Rounding=1, Callback=function(v) Aim.Settings.ThirdPersonSens=v end})
+
+local S_AimInvis = DrawSection(T_Aimbot, 'Invisible Mode', 'right')
+S_AimInvis:AddToggle({Name='Enable Invisible', Flag='AimInvis',    Default=false, Callback=function(v)
+    Aim.Settings.InvisibleEnabled=v
+    if v then startInvis() else stopInvis() end
+end})
+S_AimInvis:AddDropdown({Name='Invis Key', Flag='AimInvisKey', Values={'CapsLock','LeftShift','F','G','H','X'}, Default='CapsLock', Callback=function(v) Aim.Settings.InvisibleKey=v end})
+S_AimInvis:AddSlider({Name='Offset Y',   Flag='AimInvisOff', Default=100, Min=10, Max=500, Rounding=0, Callback=function(v) Aim.Settings.InvisibleOffsetY=v end})
+
+-- ── COMBAT TAB ────────────────────────────────────────────────────────────────
+
+
 S_Aim:AddToggle({Name='Silent Aim',  Flag='SilentAim',  Default=false, Callback=function(v) Config.raycasting=v end})
 S_Aim:AddToggle({Name='Auto Hit',    Flag='AutoHit',    Default=false, Callback=function(v) Config.autoHit=v end})
 S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=function(v) Config.noRecoil=v end})
@@ -962,6 +1472,7 @@ ThemeManager:ApplyToTab(T_Settings)
 SaveManager:LoadAutoloadConfig()
 
 Library:OnUnload(function()
+    pcall(function() Aim.Exit() end)
     untrackAllNPCs()
     for obj, conn in pairs(trackedPickups) do
         pcall(function() conn:Disconnect() end); RemoveHighlight(obj)
