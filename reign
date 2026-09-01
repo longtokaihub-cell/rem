@@ -1,7 +1,39 @@
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
-local Library = loadstring(game:HttpGet(repo .. 'source.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+local function GetLoadstringSource(Url)
+    local function tryRequest(fn, args)
+        if not fn then return nil end
+        local ok, r = pcall(fn, args)
+        if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
+    end
+    local body = tryRequest(request, {Url=Url, Method="GET"})
+        or tryRequest(http_request, {Url=Url, Method="GET"})
+        or tryRequest(syn and syn.request, {Url=Url, Method="GET"})
+        or tryRequest(fluxus and fluxus.request, {Url=Url, Method="GET"})
+    if not body then
+        local ok, r = pcall(function() return game:HttpGet(Url) end)
+        if ok and typeof(r) == "string" then body = r end
+    end
+    if not body then error("[TokaiHUB] HTTP failed: " .. tostring(Url), 2) end
+    if body:match("^429") or body:lower():match("rate limit") then
+        warn("[TokaiHUB] Rate limit — doi 10s roi thu lai")
+        task.wait(10)
+        return GetLoadstringSource(Url)
+    end
+    if body:match("^<!DOCTYPE") or body:match("^<html") then
+        error("[TokaiHUB] Server tra ve HTML — URL sai hoac repo loi", 2)
+    end
+    return body
+end
+
+local function LoadRemote(Url)
+    return loadstring(GetLoadstringSource(Url))()
+end
+
+local Library     = LoadRemote(repo .. 'source.lua')
+local ThemeManager = LoadRemote(repo .. 'addons/ThemeManager.lua')
+local SaveManager  = LoadRemote(repo .. 'addons/SaveManager.lua')
+
 
 local Players         = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
