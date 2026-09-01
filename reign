@@ -1,20 +1,27 @@
 local repo = 'https://raw.githubusercontent.com/longhazem/libba/main/'
 
+local function safeGet(name)
+    local ok, v = pcall(function() return getgenv()[name] end)
+    return ok and v or nil
+end
+
 local function GetLoadstringSource(Url)
     local function tryRequest(fn, args)
         if not fn then return nil end
         local ok, r = pcall(fn, args)
         if ok and r and r.Body and typeof(r.Body) == "string" then return r.Body end
     end
-    local body = tryRequest(request, {Url=Url, Method="GET"})
-        or tryRequest(http_request, {Url=Url, Method="GET"})
-        or tryRequest(syn and syn.request, {Url=Url, Method="GET"})
-        or tryRequest(fluxus and fluxus.request, {Url=Url, Method="GET"})
+    local body = tryRequest(safeGet("request"),      {Url=Url, Method="GET"})
+        or tryRequest(safeGet("http_request"),        {Url=Url, Method="GET"})
+        or tryRequest(safeGet("syn") and safeGet("syn").request, {Url=Url, Method="GET"})
+        or tryRequest(safeGet("fluxus") and safeGet("fluxus").request, {Url=Url, Method="GET"})
     if not body then
-        local ok, r = pcall(function() return game:HttpGet(Url) end)
-        if ok and typeof(r) == "string" then body = r end
+        local ok2, r = pcall(function() return game:HttpGet(Url) end)
+        if ok2 and typeof(r) == "string" and #r > 0 then body = r end
     end
-    if not body then error("[TokaiHUB] HTTP failed: " .. tostring(Url), 2) end
+    if not body or #body == 0 then
+        error("[TokaiHUB] HTTP failed: " .. tostring(Url), 2)
+    end
     if body:match("^429") or body:lower():match("rate limit") then
         warn("[TokaiHUB] Rate limit — doi 10s roi thu lai")
         task.wait(10)
@@ -26,10 +33,19 @@ local function GetLoadstringSource(Url)
     return body
 end
 
+local function PatchSource(Source)
+    Source = Source:gsub("Instance%[key%] = value",
+        [[if key ~= "NumSides" then pcall(function() Instance[key] = value end) end]])
+    return Source
+end
+
 local function LoadRemote(Url)
     local Source = GetLoadstringSource(Url)
+    if string.find(Url, "/source.lua", 1, true) then Source = PatchSource(Source) end
     local Chunk, LoadError = loadstring(Source)
-    if not Chunk then error("loadstring failed: " .. tostring(Url) .. " — " .. tostring(LoadError), 2) end
+    if not Chunk then
+        error("[TokaiHUB] loadstring failed: " .. tostring(Url) .. " — " .. tostring(LoadError), 2)
+    end
     return Chunk()
 end
 
@@ -40,12 +56,11 @@ do
         ThemeManager = LoadRemote(repo .. 'addons/ThemeManager.lua')
         SaveManager  = LoadRemote(repo .. 'addons/SaveManager.lua')
     end)
-    if not ok then
+    if not ok or not Library then
         warn("[TokaiHUB] Library load failed: " .. tostring(err))
         return
     end
 end
-
 
 pcall(function()
 
