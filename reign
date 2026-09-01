@@ -27,13 +27,27 @@ local function GetLoadstringSource(Url)
 end
 
 local function LoadRemote(Url)
-    return loadstring(GetLoadstringSource(Url))()
+    local Source = GetLoadstringSource(Url)
+    local Chunk, LoadError = loadstring(Source)
+    if not Chunk then error("loadstring failed: " .. tostring(Url) .. " — " .. tostring(LoadError), 2) end
+    return Chunk()
 end
 
-local Library     = LoadRemote(repo .. 'source.lua')
-local ThemeManager = LoadRemote(repo .. 'addons/ThemeManager.lua')
-local SaveManager  = LoadRemote(repo .. 'addons/SaveManager.lua')
+local Library, ThemeManager, SaveManager
+do
+    local ok, err = pcall(function()
+        Library      = LoadRemote(repo .. 'source.lua')
+        ThemeManager = LoadRemote(repo .. 'addons/ThemeManager.lua')
+        SaveManager  = LoadRemote(repo .. 'addons/SaveManager.lua')
+    end)
+    if not ok then
+        warn("[TokaiHUB] Library load failed: " .. tostring(err))
+        return
+    end
+end
 
+
+pcall(function()
 
 local Players         = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -1516,3 +1530,5 @@ Library:OnUnload(function()
     drawingPool = {}
     Library.Unloaded = true
 end)
+
+end) -- end pcall wrapper
