@@ -33,6 +33,7 @@ local Config = {
     medkitESP         = false,
     gearESP           = false,
     throwableESP      = false,
+    collectibleESP    = false,
     -- Entity ESP filters
     zombieESP         = false,
     zombieBox         = true,
@@ -61,6 +62,7 @@ local Config = {
     MaxDistance       = 3570,         -- studs (~1000m)
     -- Utility
     infiniteAmmo      = false,
+    customAmmoCount   = 9999,
     infiniteStamina   = false,
     autoReload        = false,
     autoReloadInterval = 2,
@@ -69,11 +71,9 @@ local Config = {
     -- World
     nofog             = false,
     fullbright        = false,
-    -- RPM & Reload
+    -- RPM
     rpmEnabled        = false,
-    rpmValue          = 600,   -- RPM thực tế (rounds per minute)
-    reloadSpeedEnabled = false,
-    reloadSpeedMultiplier = 2.0,
+    rpmValue          = 600,
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -143,15 +143,6 @@ task.spawn(function()
         end
     end
 end)
-
--- ─── RELOAD SPEED ─────────────────────────────────────────────────────────────
--- PlayAnimation.lua gọi track:AdjustSpeed(speed) khi reload.
--- Reloading BoolValue nằm trong tool được equip trên character.
-
-local function isAnimationTrack(obj)
-    local ok, cn = pcall(function() return obj.ClassName end)
-    return ok and cn == "AnimationTrack"
-end
 
 local function AddHighlight(obj, color, transparency)
     if not obj or not obj.Parent then return end
@@ -302,15 +293,42 @@ local function UpdatePickupESP()
         if obj and obj.Parent then
             local cfg = resolvePickup(obj.Name)
             if cfg and not Config[cfg.key] then RemoveHighlight(obj) end
+            -- collectible toggle off
+            if not Config.collectibleESP and obj:FindFirstChild("ObjectConfig") then
+                RemoveHighlight(obj)
+            end
         end
     end
     local gameObjects = workspace.Game and workspace.Game.Current
         and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
     if not gameObjects then return end
+
+    -- standard pickups (pickup_ammo, pickup_medkit, etc.)
     for _, obj in ipairs(gameObjects:GetChildren()) do
         local cfg = resolvePickup(obj.Name)
         if cfg and Config[cfg.key] and not obj:FindFirstChild("TokaiHL") then
             AddHighlight(obj, cfg.color, 0.3); trackPickup(obj)
+        end
+    end
+
+    -- collectible ESP — nằm trong subfolder "collectible", mỗi child là một collectible_pickup
+    -- display_name StringValue nằm trong ObjectConfig folder của mỗi object
+    if Config.collectibleESP then
+        local collectibleFolder = gameObjects:FindFirstChild("collectible")
+        if collectibleFolder then
+            for _, obj in ipairs(collectibleFolder:GetChildren()) do
+                if obj:IsA("Model") and not obj:FindFirstChild("TokaiHL") then
+                    -- lấy tên hiển thị từ ObjectConfig.display_name nếu có
+                    local displayName = "Collectible"
+                    local objCfg = obj:FindFirstChild("ObjectConfig")
+                    if objCfg then
+                        local dn = objCfg:FindFirstChild("display_name")
+                        if dn and dn.Value ~= "" then displayName = dn.Value end
+                    end
+                    AddHighlight(obj, Color3.fromRGB(255, 215, 0), 0.3)
+                    trackPickup(obj)
+                end
+            end
         end
     end
 end
@@ -583,14 +601,6 @@ local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    -- Reload Speed: hook AdjustSpeed trên mọi AnimationTrack
-    -- Không check isReloading() vì Reloading BoolValue nằm sâu trong controller script
-    -- Apply cho tất cả AdjustSpeed call — chỉ animation speed bị affect, không có side effect
-    if Config.reloadSpeedEnabled and method == "AdjustSpeed" and isAnimationTrack(self) then
-        local spd = select(1, ...)
-        return oldNamecall(self, (spd or 1) * Config.reloadSpeedMultiplier)
-    end
-
     -- Silent Aim + No Spread
     if method == RAYCAST_METHOD and self == Workspace then
         local origin, dir, params = ...
@@ -697,10 +707,10 @@ task.spawn(function()
                             if Ammo and Ammo:IsA("NumberValue") then
                                 if Config.infiniteAmmo then
                                     if originalAmmoValues[item] == nil then originalAmmoValues[item] = Ammo.Value end
-                                    Ammo.Value = 9999
+                                    Ammo.Value = Config.customAmmoCount
                                 else
                                     if originalAmmoValues[item] ~= nil then
-                                        if Ammo.Value == 9999 then Ammo.Value = originalAmmoValues[item] end
+                                        if Ammo.Value == Config.customAmmoCount then Ammo.Value = originalAmmoValues[item] end
                                         originalAmmoValues[item] = nil
                                     end
                                 end
@@ -832,10 +842,8 @@ S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=
 S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
-S_GunMods:AddToggle({Name='RPM Hack',          Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
-S_GunMods:AddSlider({Name='RPM',               Flag='RPMValue',      Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
-S_GunMods:AddToggle({Name='Reload Speed',      Flag='ReloadEnabled', Default=false, Callback=function(v) Config.reloadSpeedEnabled=v end})
-S_GunMods:AddSlider({Name='Reload Multiplier', Flag='ReloadMulti',   Default=2, Min=0.1, Max=20, Rounding=1, Suffix='x', Callback=function(v) Config.reloadSpeedMultiplier=v end})
+S_GunMods:AddToggle({Name='RPM Hack', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM',      Flag='RPMValue',   Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
@@ -865,7 +873,15 @@ S_Pickup:AddToggle({Name='Ammo ESP',      Flag='AmmoESP',      Default=false, Ca
 S_Pickup:AddToggle({Name='Armor ESP',     Flag='ArmorESP',     Default=false, Callback=function(v) Config.armorESP=v end})
 S_Pickup:AddToggle({Name='Medkit ESP',    Flag='MedkitESP',    Default=false, Callback=function(v) Config.medkitESP=v end})
 S_Pickup:AddToggle({Name='Gear ESP',      Flag='GearESP',      Default=false, Callback=function(v) Config.gearESP=v end})
-S_Pickup:AddToggle({Name='Throwable ESP', Flag='ThrowableESP', Default=false, Callback=function(v) Config.throwableESP=v end})
+S_Pickup:AddToggle({Name='Throwable ESP',   Flag='ThrowableESP',   Default=false, Callback=function(v) Config.throwableESP=v end})
+S_Pickup:AddToggle({Name='Collectible ESP', Flag='CollectibleESP', Default=false, Callback=function(v)
+    Config.collectibleESP=v
+    if not v then
+        for obj in pairs(highlightObjects) do
+            if obj and obj.Parent and obj:FindFirstChild("ObjectConfig") then RemoveHighlight(obj) end
+        end
+    end
+end})
 
 local S_ZombieESP = DrawSection(T_Visuals, 'Zombie ESP', 'left')
 S_ZombieESP:AddToggle({Name='Zombie ESP',    Flag='ZombieESP', Default=false, Callback=function(v)
@@ -921,6 +937,7 @@ end})
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
 S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
+S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=9999, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
