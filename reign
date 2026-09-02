@@ -94,28 +94,38 @@ local ZERO_CFRAME = CFrame.new()
 local newIndexHook
 
 newIndexHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
-    -- No Recoil: zero out camera_recoil / visual_recoil CFrameValue writes
-    if Config.noRecoil then
-        if key == "Value" and typeof(value) == "CFrame" and self:IsA("CFrameValue")
-        and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
+    -- guard: pcall toàn bộ để tránh crash game script khi self bị destroy
+    local ok, result = pcall(function()
+        -- No Recoil
+        if Config.noRecoil and key == "Value" then
+            if typeof(value) == "CFrame" and self:IsA("CFrameValue")
+            and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
+                return "recoil_cframe"
+            end
+        end
+        if Config.noRecoil and key == "NearIntensity"
+        and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
+            return "recoil_blur"
+        end
+        -- RPM
+        if Config.rpmEnabled and key == "Value"
+        and type(value) == "number" and value > 0
+        and self:IsA("NumberValue") and self.Name == "LastFired" then
+            return "rpm"
+        end
+    end)
+
+    if ok then
+        if result == "recoil_cframe" then
             return newIndexHook(self, key, ZERO_CFRAME)
-        end
-        if key == "NearIntensity" and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
+        elseif result == "recoil_blur" then
             return newIndexHook(self, key, 0)
+        elseif result == "rpm" then
+            local delay = 60 / math.max(Config.rpmValue, 1)
+            return newIndexHook(self, key, tick() - delay)
         end
     end
-    -- RPM Hack: intercept LastFired.Value = tick() write ngay sau mỗi shot
-    -- Thay bằng tick() - (60/rpmValue) để cooldown check pass ngay lập tức lần tiếp
-    -- RPM cao = delay nhỏ = bắn nhanh. RPM thấp = bắn chậm (đúng logic thực tế)
-    if Config.rpmEnabled
-    and key == "Value"
-    and type(value) == "number"
-    and value > 0
-    and self:IsA("NumberValue")
-    and self.Name == "LastFired" then
-        local delay = 60 / math.max(Config.rpmValue, 1)
-        return newIndexHook(self, key, tick() - delay)
-    end
+
     return newIndexHook(self, key, value)
 end))
 
