@@ -156,18 +156,20 @@ local recoilHook
 
 local function installRecoilHook()
     if recoilHook then return end
-    recoilHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
-        if Config.noRecoil then
-            if key == "Value" and typeof(value) == "CFrame" and self:IsA("CFrameValue")
-            and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
-                return recoilHook(self, key, ZERO_CFRAME)
+    pcall(function()
+        recoilHook = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+            if Config.noRecoil then
+                if key == "Value" and typeof(value) == "CFrame" and self:IsA("CFrameValue")
+                and (self.Name == "camera_recoil" or self.Name == "visual_recoil") then
+                    return recoilHook(self, key, ZERO_CFRAME)
+                end
+                if key == "NearIntensity" and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
+                    return recoilHook(self, key, 0)
+                end
             end
-            if key == "NearIntensity" and self:IsA("BlurEffect") and self.Name == "VisualRecoilBlur" then
-                return recoilHook(self, key, 0)
-            end
-        end
-        return recoilHook(self, key, value)
-    end))
+            return recoilHook(self, key, value)
+        end))
+    end)
 end
 installRecoilHook()
 
@@ -659,28 +661,30 @@ end)
 
 local RAYCAST_METHOD = "Raycast"
 local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
+pcall(function()
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
 
-    -- Silent Aim + No Spread
-    if method == RAYCAST_METHOD and self == Workspace then
-        local origin, dir, params = ...
-        if params and params.CollisionGroup == "raycast_npc_neutral" then
-            local doSpread = Config.noSpread
-            local doSilent = Config.raycasting and target.position ~= nil
-            if doSpread or doSilent then
-                if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
-                if doSilent then
-                    local toTarget = target.position - origin
-                    if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+        -- Silent Aim + No Spread
+        if method == RAYCAST_METHOD and self == Workspace then
+            local origin, dir, params = ...
+            if params and params.CollisionGroup == "raycast_npc_neutral" then
+                local doSpread = Config.noSpread
+                local doSilent = Config.raycasting and target.position ~= nil
+                if doSpread or doSilent then
+                    if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
+                    if doSilent then
+                        local toTarget = target.position - origin
+                        if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+                    end
+                    return oldNamecall(self, origin, dir, params)
                 end
-                return oldNamecall(self, origin, dir, params)
             end
         end
-    end
 
-    return oldNamecall(self, ...)
-end))
+        return oldNamecall(self, ...)
+    end))
+end)
 
 -- ─── AUTO HIT ────────────────────────────────────────────────────────────────
 
@@ -874,8 +878,10 @@ local function WrapSection(Groupbox)
         local Flag = tostring(Data.Flag or Data.Name or "C")
         local label = Groupbox:AddLabel(tostring(Data.Name or Flag))
         label:AddColorPicker(Flag, {Default=Data.Default or Color3.new(1,1,1)})
-        local opts = getgenv().Options
-        if Data.Callback and opts and opts[Flag] then opts[Flag]:OnChanged(Data.Callback) end
+        pcall(function()
+            local opts = getgenv().Options
+            if Data.Callback and opts and opts[Flag] then opts[Flag]:OnChanged(Data.Callback) end
+        end)
     end
     function S:AddButton(Data)
         return Groupbox:AddButton(Data.Name or "Button", Data.Callback or function() end)
@@ -901,8 +907,11 @@ pcall(function()
     end
 end)
 
-getgenv().TokaiAimbot = {}
-local Aim = getgenv().TokaiAimbot
+local Aim = {}
+pcall(function()
+    getgenv().TokaiAimbot = {}
+    Aim = getgenv().TokaiAimbot
+end)
 
 local AimConnections = {}
 local AimRunning = false
@@ -1362,7 +1371,7 @@ Aim.Exit = function()
     pcall(function() Aim.FOVCircle:Remove() end)
     pcall(function() if AimHighlight then AimHighlight:Destroy() end end)
     pcall(function() if aimDistPart then aimDistPart:Destroy() end end)
-    getgenv().TokaiAimbot=nil
+    pcall(function() getgenv().TokaiAimbot=nil end)
 end
 
 local Window = Library:CreateWindow({Title='Tokai HUB - Reign Fall', Center=true, AutoShow=true, TabPadding=8, MenuFadeTime=0.2})
@@ -1500,10 +1509,16 @@ S_ESPColor:AddColorPicker({Name='Zombie Color', Flag='ZombieColor',  Default=Col
 S_ESPColor:AddColorPicker({Name='Player Color', Flag='PlayerColor',  Default=Color3.fromRGB(0,200,255), Callback=function(v) Config.PlayerColor=v end})
 S_ESPColor:AddColorPicker({Name='Health Color', Flag='HealthColor',  Default=Color3.new(0,1,0),         Callback=function(v) Config.HealthBarColor=v end})
 S_ESPColor:AddToggle({Name='Override Box Color', Flag='BoxOverride', Default=false, Callback=function(v)
-    Config.BoxColor = v and (getgenv().Options and getgenv().Options.BoxColor and getgenv().Options.BoxColor.Value or Color3.new(1,1,1)) or nil
+    pcall(function()
+        local opts = getgenv().Options
+        Config.BoxColor = v and (opts and opts.BoxColor and opts.BoxColor.Value or Color3.new(1,1,1)) or nil
+    end)
 end})
 S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new(1,1,1), Callback=function(v)
-    if getgenv().Options and getgenv().Options.BoxOverride and getgenv().Options.BoxOverride.Value then Config.BoxColor=v end
+    pcall(function()
+        local opts = getgenv().Options
+        if opts and opts.BoxOverride and opts.BoxOverride.Value then Config.BoxColor=v end
+    end)
 end})
 
 -- UTILITY
