@@ -576,19 +576,57 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ─── NAMECALL HOOK (Silent Aim + No Spread + Multi Shot) ─────────────────────
+-- ─── NAMECALL HOOK (Silent Aim + No Spread) ───────────────────────────────────
 
 local RAYCAST_METHOD = "Raycast"
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
 
--- Multi Shot: fire N extra raycasts sau mỗi weapon shot
--- Detect bằng CollisionGroup == "raycast_npc_neutral" (chỉ weapon raycast dùng group này)
--- Mỗi extra ray cùng origin/direction với shot gốc, dùng spread nhỏ để không trùng nhau
--- Kết quả hit được gửi lên server qua RegisterHit:FireServer
+    if method == RAYCAST_METHOD and self == Workspace then
+        local origin, dir, params = ...
+        if params and params.CollisionGroup == "raycast_npc_neutral" then
+            if Config.noSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
+            if Config.raycasting and target.position ~= nil then
+                local toTarget = target.position - origin
+                if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+            end
+            return oldNamecall(self, origin, dir, params)
+        end
+    end
 
-local lastShotTime = 0
-local MULTI_SHOT_COOLDOWN = 0.05 -- tránh double-fire trong cùng một frame
+    return oldNamecall(self, ...)
+end))
 
-local function findRegisterHitRemote()
+-- ─── MULTI SHOT — intercept RegisterHit FireServer payload ────────────────────
+-- Server dùng entry.amount để nhân số pellet hit khi tính damage.
+-- Thay vì FireServer thêm lần (bị server reject do direction check),
+-- hook __namecall trên FireServer của RegisterHit RemoteEvent,
+-- duplicate mỗi entry trong payload thêm multiShotCount lần → amount tăng lên.
+
+local fireServerHook
+fireServerHook = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if Config.multiShotEnabled and method == "FireServer"
+    and self:IsA("RemoteEvent") and self.Name == "RegisterHit" then
+        local args = {...}
+        local payload = args[1]
+        if type(payload) == "table" then
+            local extra = math.clamp(math.floor(Config.multiShotCount), 1, 20)
+            for _, entry in ipairs(payload) do
+                if type(entry) == "table" and entry.amount then
+                    entry.amount = entry.amount + extra
+                end
+            end
+        end
+        return fireServerHook(self, unpack(args))
+    end
+    return fireServerHook(self, ...)
+end))
+
+-- ─── AUTO HIT ────────────────────────────────────────────────────────────────
+
+local function findRegisterHitEvent()
     local char = lp.Character
     if not char then return nil end
     for _, child in ipairs(char:GetChildren()) do
@@ -599,79 +637,6 @@ local function findRegisterHitRemote()
         end
     end
     return nil
-end
-
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-
-    -- Silent Aim + No Spread + Multi Shot
-    if method == RAYCAST_METHOD and self == Workspace then
-        local origin, dir, params = ...
-        if params and params.CollisionGroup == "raycast_npc_neutral" then
-            -- apply No Spread / Silent Aim trước
-            local doSpread = Config.noSpread
-            local doSilent = Config.raycasting and target.position ~= nil
-            if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
-            if doSilent then
-                local toTarget = target.position - origin
-                if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
-            end
-
-            -- Multi Shot: fire extra raycasts sau khi shot gốc chạy
-            -- Chỉ fire nếu đủ cooldown (tránh loop khi pellet_amount > 1)
-            if Config.multiShotEnabled then
-                local now = tick()
-                if now - lastShotTime > MULTI_SHOT_COOLDOWN then
-                    lastShotTime = now
-                    task.defer(function()
-                        local hitRemote = findRegisterHitRemote()
-                        if not hitRemote then return end
-                        local count = math.clamp(math.floor(Config.multiShotCount), 1, 20)
-                        for i = 1, count do
-                            pcall(function()
-                                -- thêm spread nhỏ để các viên không trùng nhau hoàn toàn
-                                local spread = 0.5
-                                local extraDir = dir + Vector3.new(
-                                    math.random() * spread * 2 - spread,
-                                    math.random() * spread * 2 - spread,
-                                    math.random() * spread * 2 - spread
-                                )
-                                local extraParams = RaycastParams.new()
-                                extraParams.CollisionGroup = "raycast_npc_neutral"
-                                extraParams.IgnoreWater = true
-                                local result = Workspace:Raycast(origin, extraDir, extraParams)
-                                if result then
-                                    local hitModel = result.Instance and result.Instance.Parent
-                                    if hitModel and hitModel:FindFirstChild("Humanoid") then
-                                        local hitPart = result.Instance
-                                        hitRemote:FireServer({{
-                                            amount = 1,
-                                            target = hitModel,
-                                            is_friendly = false,
-                                            part = hitPart
-                                        }}, {})
-                                    end
-                                end
-                            end)
-                        end
-                    end)
-                end
-            end
-
-            if doSpread or doSilent then
-                return oldNamecall(self, origin, dir, params)
-            end
-        end
-    end
-
-    return oldNamecall(self, ...)
-end))
-
--- ─── AUTO HIT ────────────────────────────────────────────────────────────────
-
-local function findRegisterHitEvent()
-    return findRegisterHitRemote()
 end
 
 local function getTargets()
