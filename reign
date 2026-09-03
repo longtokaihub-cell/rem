@@ -34,6 +34,14 @@ local Config = {
     gearESP           = false,
     throwableESP      = false,
     collectibleESP    = false,
+    -- Auto Pickup
+    autoPickupAmmo      = false,
+    autoPickupArmor     = false,
+    autoPickupMedkit    = false,
+    autoPickupGear      = false,
+    autoPickupThrowable = false,
+    autoPickupCollectible = false,
+    autoPickupRange     = 15,  -- studs
     -- Entity ESP filters
     zombieESP         = false,
     zombieBox         = true,
@@ -62,7 +70,7 @@ local Config = {
     MaxDistance       = 3570,         -- studs (~1000m)
     -- Utility
     infiniteAmmo      = false,
-    customAmmoCount   = 9999,
+    customAmmoCount   = 300,
     infiniteStamina   = false,
     autoReload        = false,
     autoReloadInterval = 2,
@@ -752,6 +760,67 @@ task.spawn(function()
     end
 end)
 
+-- ─── AUTO PICKUP ──────────────────────────────────────────────────────────────
+-- FireServer y chang interact action: Interact:FireServer({value=obj, began=true})
+-- Scan GameObjects mỗi 0.3s, nếu object trong range thì fire interact event.
+
+local INTERACT_EVENT = game.ReplicatedStorage.Events.Controls.Misc.Interact
+
+local AUTO_PICKUP_KEYS = {
+    pickup_ammo      = "autoPickupAmmo",
+    pickup_armor     = "autoPickupArmor",
+    pickup_medkit    = "autoPickupMedkit",
+    pickup_gear      = "autoPickupGear",
+    pickup_throwable = "autoPickupThrowable",
+}
+
+local function getCharacterRoot()
+    local char = lp.Character
+    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+end
+
+task.spawn(function()
+    while task.wait(0.3) do
+        local root = getCharacterRoot()
+        if not root then continue end
+        local rootPos = root.Position
+
+        local gameObjects = workspace.Game and workspace.Game.Current
+            and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
+        if not gameObjects then continue end
+
+        -- standard pickups
+        for _, obj in ipairs(gameObjects:GetChildren()) do
+            local configKey = AUTO_PICKUP_KEYS[obj.Name]
+            if configKey and Config[configKey] and obj:IsA("Model") then
+                local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+                if primary and (primary.Position - rootPos).Magnitude <= Config.autoPickupRange then
+                    pcall(function()
+                        INTERACT_EVENT:FireServer({value = obj, began = true})
+                    end)
+                end
+            end
+        end
+
+        -- collectibles (subfolder "collectible")
+        if Config.autoPickupCollectible then
+            local collectibleFolder = gameObjects:FindFirstChild("collectible")
+            if collectibleFolder then
+                for _, obj in ipairs(collectibleFolder:GetChildren()) do
+                    if obj:IsA("Model") then
+                        local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+                        if primary and (primary.Position - rootPos).Magnitude <= Config.autoPickupRange then
+                            pcall(function()
+                                INTERACT_EVENT:FireServer({value = obj, began = true})
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
 -- ─── SPEED HACK ───────────────────────────────────────────────────────────────
 
 task.spawn(function()
@@ -942,9 +1011,16 @@ S_ESPColor:AddColorPicker({Name='Box Color', Flag='BoxColor', Default=Color3.new
 end})
 
 -- UTILITY
-local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
+local S_AutoPickup = DrawSection(T_Utility, 'Auto Pickup', 'left')
+S_AutoPickup:AddToggle({Name='Ammo',        Flag='APAmmo',        Default=false, Callback=function(v) Config.autoPickupAmmo=v end})
+S_AutoPickup:AddToggle({Name='Armor',       Flag='APArmor',       Default=false, Callback=function(v) Config.autoPickupArmor=v end})
+S_AutoPickup:AddToggle({Name='Medkit',      Flag='APMedkit',      Default=false, Callback=function(v) Config.autoPickupMedkit=v end})
+S_AutoPickup:AddToggle({Name='Gear',        Flag='APGear',        Default=false, Callback=function(v) Config.autoPickupGear=v end})
+S_AutoPickup:AddToggle({Name='Throwable',   Flag='APThrowable',   Default=false, Callback=function(v) Config.autoPickupThrowable=v end})
+S_AutoPickup:AddToggle({Name='Collectible', Flag='APCollectible', Default=false, Callback=function(v) Config.autoPickupCollectible=v end})
+S_AutoPickup:AddSlider({Name='Range (studs)', Flag='APRange',     Default=15, Min=1, Max=100, Rounding=0, Callback=function(v) Config.autoPickupRange=v end})
 S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
-S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=9999, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
+S_Weapons:AddSlider({Name='Ammo Count', Flag='AmmoCount', Default=300, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
