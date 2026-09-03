@@ -74,6 +74,9 @@ local Config = {
     -- RPM
     rpmEnabled        = false,
     rpmValue          = 600,
+    -- Multi Shot
+    multiShotEnabled  = false,
+    multiShotCount    = 5,   -- số viên thêm per shot (tổng = multiShotCount + 1)
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -573,25 +576,90 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ─── NAMECALL HOOK (Silent Aim + No Spread) ───────────────────────────────────
+-- ─── NAMECALL HOOK (Silent Aim + No Spread + Multi Shot) ─────────────────────
 
 local RAYCAST_METHOD = "Raycast"
+
+-- Multi Shot: fire N extra raycasts sau mỗi weapon shot
+-- Detect bằng CollisionGroup == "raycast_npc_neutral" (chỉ weapon raycast dùng group này)
+-- Mỗi extra ray cùng origin/direction với shot gốc, dùng spread nhỏ để không trùng nhau
+-- Kết quả hit được gửi lên server qua RegisterHit:FireServer
+
+local lastShotTime = 0
+local MULTI_SHOT_COOLDOWN = 0.05 -- tránh double-fire trong cùng một frame
+
+local function findRegisterHitRemote()
+    local char = lp.Character
+    if not char then return nil end
+    for _, child in ipairs(char:GetChildren()) do
+        local se = child:FindFirstChild("ServerEvents")
+        if se then
+            local re = se:FindFirstChild("RegisterHit")
+            if re and re:IsA("RemoteEvent") then return re end
+        end
+    end
+    return nil
+end
+
 local oldNamecall
 oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    -- Silent Aim + No Spread
+    -- Silent Aim + No Spread + Multi Shot
     if method == RAYCAST_METHOD and self == Workspace then
         local origin, dir, params = ...
         if params and params.CollisionGroup == "raycast_npc_neutral" then
+            -- apply No Spread / Silent Aim trước
             local doSpread = Config.noSpread
             local doSilent = Config.raycasting and target.position ~= nil
-            if doSpread or doSilent then
-                if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
-                if doSilent then
-                    local toTarget = target.position - origin
-                    if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+            if doSpread then dir = camera.CFrame.LookVector * dir.Magnitude end
+            if doSilent then
+                local toTarget = target.position - origin
+                if toTarget.Magnitude > 0.001 then dir = toTarget.Unit * dir.Magnitude end
+            end
+
+            -- Multi Shot: fire extra raycasts sau khi shot gốc chạy
+            -- Chỉ fire nếu đủ cooldown (tránh loop khi pellet_amount > 1)
+            if Config.multiShotEnabled then
+                local now = tick()
+                if now - lastShotTime > MULTI_SHOT_COOLDOWN then
+                    lastShotTime = now
+                    task.defer(function()
+                        local hitRemote = findRegisterHitRemote()
+                        if not hitRemote then return end
+                        local count = math.clamp(math.floor(Config.multiShotCount), 1, 20)
+                        for i = 1, count do
+                            pcall(function()
+                                -- thêm spread nhỏ để các viên không trùng nhau hoàn toàn
+                                local spread = 0.5
+                                local extraDir = dir + Vector3.new(
+                                    math.random() * spread * 2 - spread,
+                                    math.random() * spread * 2 - spread,
+                                    math.random() * spread * 2 - spread
+                                )
+                                local extraParams = RaycastParams.new()
+                                extraParams.CollisionGroup = "raycast_npc_neutral"
+                                extraParams.IgnoreWater = true
+                                local result = Workspace:Raycast(origin, extraDir, extraParams)
+                                if result then
+                                    local hitModel = result.Instance and result.Instance.Parent
+                                    if hitModel and hitModel:FindFirstChild("Humanoid") then
+                                        local hitPart = result.Instance
+                                        hitRemote:FireServer({{
+                                            amount = 1,
+                                            target = hitModel,
+                                            is_friendly = false,
+                                            part = hitPart
+                                        }}, {})
+                                    end
+                                end
+                            end)
+                        end
+                    end)
                 end
+            end
+
+            if doSpread or doSilent then
                 return oldNamecall(self, origin, dir, params)
             end
         end
@@ -603,16 +671,7 @@ end))
 -- ─── AUTO HIT ────────────────────────────────────────────────────────────────
 
 local function findRegisterHitEvent()
-    local char = lp.Character
-    if not char then return nil end
-    for _, child in ipairs(char:GetChildren()) do
-        local se = child:FindFirstChild("ServerEvents")
-        if se then
-            local re = se:FindFirstChild("RegisterHit")
-            if re and re:IsA("RemoteEvent") then return re end
-        end
-    end
-    return nil
+    return findRegisterHitRemote()
 end
 
 local function getTargets()
@@ -821,8 +880,12 @@ S_Aim:AddToggle({Name='No Recoil',   Flag='NoRecoil',   Default=false, Callback=
 S_Aim:AddToggle({Name='No Spread',   Flag='NoSpread',   Default=false, Callback=function(v) Config.noSpread=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
-S_GunMods:AddToggle({Name='RPM Hack', Flag='RPMEnabled', Default=false, Callback=function(v) Config.rpmEnabled=v end})
-S_GunMods:AddSlider({Name='RPM',      Flag='RPMValue',   Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+S_GunMods:AddToggle({Name='RPM Hack',     Flag='RPMEnabled',      Default=false, Callback=function(v) Config.rpmEnabled=v end})
+S_GunMods:AddSlider({Name='RPM',          Flag='RPMValue',        Default=600, Min=100, Max=1000, Rounding=0, Suffix=' RPM', Callback=function(v) Config.rpmValue=v end})
+
+local S_MultiShot = DrawSection(T_Combat, 'Multi Shot', 'right')
+S_MultiShot:AddToggle({Name='Multi Shot',      Flag='MultiShotEnabled', Default=false, Callback=function(v) Config.multiShotEnabled=v end})
+S_MultiShot:AddSlider({Name='Bullets Per Shot', Flag='MultiShotCount',  Default=5, Min=1, Max=20, Rounding=0, Callback=function(v) Config.multiShotCount=math.floor(v) end})
 
 local S_Hitbox = DrawSection(T_Combat, 'Hitbox', 'right')
 S_Hitbox:AddToggle({Name='Hitbox Expander', Flag='HitboxExpander', Default=false, Callback=function(v)
