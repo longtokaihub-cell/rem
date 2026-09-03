@@ -681,9 +681,9 @@ task.spawn(function()
                     if Stamina and Stamina:IsA("NumberValue") then
                         if Config.infiniteStamina then
                             if not originalStaminaValue then originalStaminaValue = Stamina.Value end
-                            Stamina.Value = 99999
+                            Stamina.Value = 300
                         else
-                            if originalStaminaValue and Stamina.Value == 99999 then
+                            if originalStaminaValue and Stamina.Value == 300 then
                                 Stamina.Value = originalStaminaValue; originalStaminaValue = nil
                             end
                         end
