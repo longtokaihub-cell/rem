@@ -937,7 +937,7 @@ end})
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
 S_Weapons:AddToggle({Name='Infinite Ammo',    Flag='InfAmmo',    Default=false, Callback=function(v) Config.infiniteAmmo=v end})
-S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=9999, Min=1, Max=9999, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
+S_Weapons:AddSlider({Name='Ammo Count',       Flag='AmmoCount',  Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
