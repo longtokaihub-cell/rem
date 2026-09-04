@@ -81,13 +81,6 @@ local Config = {
     aimbotShowFOV     = true,
     aimbotWallCheck   = true,
     -- Silent Aim dùng chung FOV với aimbot
-    autoPickup        = false,
-    autoPickupAmmo    = true,
-    autoPickupMedkit  = true,
-    autoPickupGear    = true,
-    autoPickupArmor   = true,
-    autoPickupCollect = true,
-    autoPickupRange   = 15,
 }
 
 -- ─── STATE ────────────────────────────────────────────────────────────────────
@@ -544,19 +537,31 @@ end
 -- Wallcheck: Raycast từ camera → target, nếu hit terrain/wall trước target thì skip.
 
 local fovCircle = Drawing.new("Circle")
-fovCircle.Visible    = false
-fovCircle.Thickness  = 1
-fovCircle.Color      = Color3.new(1, 1, 1)
-fovCircle.Transparency = 1
-fovCircle.NumSides   = 64
-fovCircle.Filled     = false
+fovCircle.Visible      = false
+fovCircle.Thickness    = 1
+fovCircle.Color        = Color3.new(1, 1, 1)
+fovCircle.Transparency = 0.5
+fovCircle.NumSides     = 60
+fovCircle.Filled       = false
+
+local FOV_COLOR_NORMAL = Color3.new(1, 1, 1)
+local FOV_COLOR_LOCKED = Color3.fromRGB(255, 70, 70)
+
+-- aimbotLocked: model hiện tại aimbot đang lock vào
+local aimbotLocked = nil
 
 local function updateFOVCircle()
-    local vp = camera.ViewportSize
-    local center = Vector2.new(vp.X / 2, vp.Y / 2)
-    fovCircle.Position = center
+    local shouldShow = Config.aimbotShowFOV and (Config.aimbotEnabled or Config.raycasting)
+    if not shouldShow then
+        fovCircle.Visible = false
+        return
+    end
+    -- follow chuột như script reference
+    local mouseLoc = UserInputService:GetMouseLocation()
+    fovCircle.Position = mouseLoc
     fovCircle.Radius   = Config.aimbotFOV
-    fovCircle.Visible  = Config.aimbotShowFOV and (Config.aimbotEnabled or Config.raycasting)
+    fovCircle.Color    = aimbotLocked and FOV_COLOR_LOCKED or FOV_COLOR_NORMAL
+    fovCircle.Visible  = true
 end
 
 local function isVisible(targetPos)
@@ -644,9 +649,13 @@ end
 
 -- Aimbot RenderStepped — lerp camera CFrame về target
 RunService.RenderStepped:Connect(function(dt)
+    local targetModel, targetPart = getNearestEnemyInFOV()
+    aimbotLocked = targetModel  -- cập nhật locked state cho FOV color
     updateFOVCircle()
-    if not Config.aimbotEnabled then return end
-    local _, targetPart = getNearestEnemyInFOV()
+    if not Config.aimbotEnabled then
+        aimbotLocked = nil
+        return
+    end
     if not targetPart then return end
     local aimPos = targetPart.Position + Vector3.new(0, 0.15, 0)
     local camCFrame = camera.CFrame
@@ -884,88 +893,6 @@ task.spawn(function()
     end
 end)
 
--- ─── AUTO PICKUP ──────────────────────────────────────────────────────────────
--- workspace.Game.Current.Spawned.Interactables chứa tất cả pickup objects.
--- Game dùng: Interact:FireServer({value=obj, began=true}) để pickup.
--- Tao scan Interactables mỗi 0.3s, filter theo tên prefix, check range, fire.
-
-local INTERACT_EVENT = game:GetService("ReplicatedStorage"):WaitForChild("Events")
-    :WaitForChild("Controls"):WaitForChild("Misc"):WaitForChild("Interact")
-
-local PICKUP_FILTER = {
-    pickup_ammo     = function() return Config.autoPickupAmmo end,
-    pickup_medkit   = function() return Config.autoPickupMedkit end,
-    pickup_gear     = function() return Config.autoPickupGear end,
-    pickup_armor    = function() return Config.autoPickupArmor end,
-    pickup_throwable = function() return Config.autoPickupGear end,
-    collectible_pickup = function() return Config.autoPickupCollect end,
-}
-
-local function getInteractablesFolder()
-    return workspace.Game
-        and workspace.Game.Current
-        and workspace.Game.Current.Spawned
-        and workspace.Game.Current.Spawned.Interactables
-end
-
-local function resolvePickupFilter(name)
-    for prefix, fn in pairs(PICKUP_FILTER) do
-        if name:sub(1, #prefix) == prefix then return fn end
-    end
-    return nil
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        if Config.autoPickup then
-            local char = lp.Character
-            local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-            if root then
-                local folder = getInteractablesFolder()
-                if folder then
-                    for _, obj in ipairs(folder:GetChildren()) do
-                        local filterFn = resolvePickupFilter(obj.Name)
-                        if filterFn and filterFn() then
-                            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-                            if primary then
-                                local dist = (root.Position - primary.Position).Magnitude
-                                if dist <= Config.autoPickupRange then
-                                    pcall(function()
-                                        INTERACT_EVENT:FireServer({value = obj, began = true})
-                                    end)
-                                end
-                            end
-                        end
-                    end
-                end
-                -- collectible nằm trong GameObjects/collectible subfolder
-                if Config.autoPickupCollect then
-                    local gameObjects = workspace.Game.Current
-                        and workspace.Game.Current.Spawned
-                        and workspace.Game.Current.Spawned.GameObjects
-                    if gameObjects then
-                        local collectFolder = gameObjects:FindFirstChild("collectible")
-                        if collectFolder then
-                            for _, obj in ipairs(collectFolder:GetChildren()) do
-                                local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-                                if primary then
-                                    local dist = (root.Position - primary.Position).Magnitude
-                                    if dist <= Config.autoPickupRange then
-                                        pcall(function()
-                                            INTERACT_EVENT:FireServer({value = obj, began = true})
-                                        end)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function()
@@ -1135,15 +1062,6 @@ end})
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
 S_Weapons:AddToggle({Name='Infinite Ammo', Flag='InfAmmo', Default=false, Callback=function(v) Config.infiniteAmmo=v end})
 S_Weapons:AddSlider({Name='Ammo Count', Flag='AmmoCount', Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
-
-local S_AutoPickup = DrawSection(T_Utility, 'Auto Pickup', 'left')
-S_AutoPickup:AddToggle({Name='Auto Pickup',       Flag='AutoPickup',      Default=false, Callback=function(v) Config.autoPickup=v end})
-S_AutoPickup:AddToggle({Name='  └ Ammo',          Flag='PickupAmmo',      Default=true,  Callback=function(v) Config.autoPickupAmmo=v end})
-S_AutoPickup:AddToggle({Name='  └ Medkit',        Flag='PickupMedkit',    Default=true,  Callback=function(v) Config.autoPickupMedkit=v end})
-S_AutoPickup:AddToggle({Name='  └ Armor',         Flag='PickupArmor',     Default=true,  Callback=function(v) Config.autoPickupArmor=v end})
-S_AutoPickup:AddToggle({Name='  └ Gear',          Flag='PickupGear',      Default=true,  Callback=function(v) Config.autoPickupGear=v end})
-S_AutoPickup:AddToggle({Name='  └ Collectible',   Flag='PickupCollect',   Default=true,  Callback=function(v) Config.autoPickupCollect=v end})
-S_AutoPickup:AddSlider({Name='Range (studs)',      Flag='PickupRange',     Default=15, Min=5, Max=50, Rounding=0, Callback=function(v) Config.autoPickupRange=v end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
