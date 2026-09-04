@@ -550,15 +550,45 @@ local FOV_COLOR_LOCKED = Color3.fromRGB(255, 70, 70)
 -- aimbotLocked: model hiện tại aimbot đang lock vào
 local aimbotLocked = nil
 
+-- ─── CROSSHAIR ────────────────────────────────────────────────────────────────
+
+local crosshairEnabled  = true
+local crosshairRotation = 0
+local crosshairHue      = 0
+
+local function setupCrosshair()
+    local pg = lp:WaitForChild("PlayerGui")
+    local old = pg:FindFirstChild("TokaiCrosshair")
+    if old then old:Destroy() end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "TokaiCrosshair"; gui.IgnoreGuiInset = true; gui.ResetOnSpawn = false; gui.Parent = pg
+    local img = Instance.new("ImageLabel")
+    img.Name = "Crosshair"; img.AnchorPoint = Vector2.new(0.5, 0.5)
+    img.Position = UDim2.fromScale(0.5, 0.5); img.Size = UDim2.fromOffset(40, 40)
+    img.BackgroundTransparency = 1; img.Image = "rbxassetid://11763278596"
+    img.ImageTransparency = 0; img.ScaleType = Enum.ScaleType.Fit; img.Parent = gui
+    return gui, img
+end
+
+local crosshairGui, crosshairImg = setupCrosshair()
+
+RunService.RenderStepped:Connect(function(dt)
+    if not crosshairEnabled or not crosshairImg or not crosshairImg.Parent then return end
+    crosshairRotation = (crosshairRotation + 120 * dt) % 360
+    crosshairImg.Rotation = crosshairRotation
+    crosshairHue = (crosshairHue + 0.4 * dt) % 1
+    crosshairImg.ImageColor3 = Color3.fromHSV(crosshairHue, 1, 1)
+end)
+
 local function updateFOVCircle()
     local shouldShow = Config.aimbotShowFOV and (Config.aimbotEnabled or Config.raycasting)
     if not shouldShow then
         fovCircle.Visible = false
         return
     end
-    -- follow chuột như script reference
-    local mouseLoc = UserInputService:GetMouseLocation()
-    fovCircle.Position = mouseLoc
+    -- cố định giữa màn hình
+    local vp = camera.ViewportSize
+    fovCircle.Position = Vector2.new(vp.X / 2, vp.Y / 2)
     fovCircle.Radius   = Config.aimbotFOV
     fovCircle.Color    = aimbotLocked and FOV_COLOR_LOCKED or FOV_COLOR_NORMAL
     fovCircle.Visible  = true
@@ -958,6 +988,10 @@ local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
 S_Aim:AddToggle({Name='Aimbot',     Flag='Aimbot',    Default=false, Callback=function(v) Config.aimbotEnabled=v end})
 S_Aim:AddToggle({Name='Silent Aim', Flag='SilentAim', Default=false, Callback=function(v) Config.raycasting=v end})
 S_Aim:AddToggle({Name='Show FOV',   Flag='ShowFOV',   Default=true,  Callback=function(v) Config.aimbotShowFOV=v end})
+S_Aim:AddToggle({Name='Crosshair',  Flag='Crosshair', Default=true,  Callback=function(v)
+    crosshairEnabled = v
+    if crosshairImg then crosshairImg.Visible = v end
+end})
 S_Aim:AddToggle({Name='Wall Check', Flag='WallCheck', Default=true,  Callback=function(v) Config.aimbotWallCheck=v end})
 S_Aim:AddSlider({Name='FOV', Flag='AimbotFOV', Default=120, Min=10, Max=500, Rounding=0, Suffix=' px', Callback=function(v) Config.aimbotFOV=v end})
 S_Aim:AddSlider({Name='Smoothing', Flag='Smoothing', Default=18, Min=1, Max=99, Rounding=0, Suffix='%', Callback=function(v) Config.aimbotSmoothing=v/100 end})
@@ -1096,5 +1130,6 @@ Library:OnUnload(function()
     end
     drawingPool = {}
     pcall(function() fovCircle:Remove() end)
+    pcall(function() if crosshairGui then crosshairGui:Destroy() end end)
     Library.Unloaded = true
 end)
