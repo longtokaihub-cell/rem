@@ -82,6 +82,7 @@ local Config = {
     aimbotWallCheck   = true,
     aimbotPart        = "Head",   -- bộ phận aimbot nhắm vào
     silentAimPart     = "Head",   -- bộ phận silent aim nhắm vào
+    instantInteract   = false,
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -955,6 +956,65 @@ task.spawn(function()
     end
 end)
 
+-- ─── INSTANT INTERACT ─────────────────────────────────────────────────────────
+-- Game dùng InteractionConnections_Server folder trong interactable object.
+-- Bên trong có Current (NumberValue) và Goal (NumberValue).
+-- Server complete interaction khi Current.Value >= Goal.Value.
+-- Instant interact: khi player đang hold interact (began=true đã fire),
+-- set Current.Value = Goal.Value ngay lập tức.
+-- Đồng thời fire Interact:FireServer({value=obj, began=true}) nếu chưa fire.
+
+local INTERACT_REMOTE = game:GetService("ReplicatedStorage")
+    :WaitForChild("Events"):WaitForChild("Controls"):WaitForChild("Misc"):WaitForChild("Interact")
+
+local function getSpawnedInteractables()
+    return workspace.Game and workspace.Game.Current
+        and workspace.Game.Current.Spawned
+        and workspace.Game.Current.Spawned.Interactables
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if not Config.instantInteract then continue end
+        local char = lp.Character
+        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+        if not root then continue end
+
+        local folder = getSpawnedInteractables()
+        if not folder then continue end
+
+        for _, obj in ipairs(folder:GetChildren()) do
+            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+            if not primary then continue end
+            local dist = (root.Position - primary.Position).Magnitude
+            if dist > 12 then continue end
+
+            -- fire interact began
+            pcall(function()
+                INTERACT_REMOTE:FireServer({value = obj, began = true})
+            end)
+
+            -- set Current = Goal để complete ngay
+            local connFolder = obj:FindFirstChild("InteractionConnections_Server")
+            if connFolder then
+                for _, conn in ipairs(connFolder:GetChildren()) do
+                    local current = conn:FindFirstChild("Current")
+                    local goal    = conn:FindFirstChild("Goal")
+                    if current and goal and goal.Value > 0 then
+                        pcall(function() current.Value = goal.Value end)
+                    end
+                end
+            end
+
+            -- fire ended
+            pcall(function()
+                INTERACT_REMOTE:FireServer({value = obj, began = false})
+            end)
+        end
+    end
+end)
+
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function()
@@ -1132,8 +1192,9 @@ end})
 
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
-S_Weapons:AddToggle({Name='Infinite Ammo', Flag='InfAmmo', Default=false, Callback=function(v) Config.infiniteAmmo=v end})
-S_Weapons:AddSlider({Name='Ammo Count', Flag='AmmoCount', Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
+S_Weapons:AddToggle({Name='Infinite Ammo',   Flag='InfAmmo',        Default=false, Callback=function(v) Config.infiniteAmmo=v end})
+S_Weapons:AddSlider({Name='Ammo Count',      Flag='AmmoCount',      Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
+S_Weapons:AddToggle({Name='Instant Interact', Flag='InstantInteract', Default=false, Callback=function(v) Config.instantInteract=v end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
