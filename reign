@@ -80,6 +80,8 @@ local Config = {
     aimbotFOV         = 120,
     aimbotShowFOV     = true,
     aimbotWallCheck   = true,
+    aimbotPart        = "Head",   -- bộ phận aimbot nhắm vào
+    silentAimPart     = "Head",   -- bộ phận silent aim nhắm vào
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -615,26 +617,57 @@ local function getScreenCenter()
     return Vector2.new(vp.X / 2, vp.Y / 2)
 end
 
+-- body part priority list — fallback nếu part không tồn tại
+local PART_FALLBACKS = {
+    Head            = {"Head", "HumanoidRootPart", "Torso"},
+    HumanoidRootPart = {"HumanoidRootPart", "Torso", "Head"},
+    Torso           = {"Torso", "UpperTorso", "HumanoidRootPart"},
+    UpperTorso      = {"UpperTorso", "Torso", "HumanoidRootPart"},
+    LowerTorso      = {"LowerTorso", "Torso", "HumanoidRootPart"},
+    LeftArm         = {"LeftUpperArm", "LeftLowerArm", "LeftArm", "Torso"},
+    RightArm        = {"RightUpperArm", "RightLowerArm", "RightArm", "Torso"},
+    LeftLeg         = {"LeftUpperLeg", "LeftLowerLeg", "LeftLeg", "HumanoidRootPart"},
+    RightLeg        = {"RightUpperLeg", "RightLowerLeg", "RightLeg", "HumanoidRootPart"},
+}
+
+local function getPartFromModel(model, partName)
+    -- thử exact name trước
+    local part = model:FindFirstChild(partName)
+    if part and part:IsA("BasePart") then return part end
+    -- fallback list
+    local fallbacks = PART_FALLBACKS[partName]
+    if fallbacks then
+        for _, name in ipairs(fallbacks) do
+            local p = model:FindFirstChild(name)
+            if p and p:IsA("BasePart") then return p end
+        end
+    end
+    -- last resort
+    return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
+end
+
 local function getNearestEnemyInFOV()
     local container = getEnemyContainer()
     if not container then return nil, nil end
-    local referencePos = isMobile and getScreenCenter() or UserInputService:GetMouseLocation()
+    local referencePos = isMobile and getScreenCenter() or Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
     local bestModel, bestPart, bestDist = nil, nil, math.huge
 
     for _, enemy in ipairs(container:GetChildren()) do
         if enemy:IsA("Model") then
             local humanoid = enemy:FindFirstChild("Humanoid")
             if humanoid and humanoid.Health > 0 then
+                -- dùng Head để tính FOV screen dist (luôn visible trên screen)
                 local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
                 if head then
                     local screenPt, onScreen = camera:WorldToViewportPoint(head.Position)
                     if onScreen then
-                        local screenPos = Vector2.new(screenPt.X, screenPt.Y)
-                        local screenDist = (screenPos - referencePos).Magnitude
+                        local screenDist = (Vector2.new(screenPt.X, screenPt.Y) - referencePos).Magnitude
                         if screenDist <= Config.aimbotFOV and screenDist < bestDist then
-                            if isVisible(head.Position) then
+                            -- lấy part theo config để aim vào
+                            local aimPart = getPartFromModel(enemy, Config.aimbotPart)
+                            if aimPart and isVisible(aimPart.Position) then
                                 bestModel = enemy
-                                bestPart  = head
+                                bestPart  = aimPart
                                 bestDist  = screenDist
                             end
                         end
@@ -650,7 +683,7 @@ end
 local function getClosestHead()
     local container = getEnemyContainer()
     if not container then return nil end
-    local referencePos = isMobile and getScreenCenter() or UserInputService:GetMouseLocation()
+    local referencePos = isMobile and getScreenCenter() or Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
     local bestPos, bestDist = nil, math.huge
 
     for _, enemy in ipairs(container:GetChildren()) do
@@ -658,14 +691,13 @@ local function getClosestHead()
         if enemy.Name == BULWARK_NAME then
             targetPos = getBulwarkBackPosition(enemy)
         else
-            local head = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-            targetPos = head and head.Position
+            local aimPart = getPartFromModel(enemy, Config.silentAimPart)
+            targetPos = aimPart and aimPart.Position
         end
         if targetPos then
             local sp, onScreen = camera:WorldToViewportPoint(targetPos)
             if onScreen then
                 local screenDist = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
-                -- silent aim dùng chung FOV
                 if screenDist <= Config.aimbotFOV and screenDist < bestDist then
                     if isVisible(targetPos) then
                         bestDist = screenDist; bestPos = targetPos
@@ -993,6 +1025,12 @@ S_Aim:AddToggle({Name='Crosshair',  Flag='Crosshair', Default=true,  Callback=fu
     if crosshairImg then crosshairImg.Visible = v end
 end})
 S_Aim:AddToggle({Name='Wall Check', Flag='WallCheck', Default=true,  Callback=function(v) Config.aimbotWallCheck=v end})
+S_Aim:AddDropdown({Name='Aimbot Part', Flag='AimbotPart',
+    Values={'Head','Torso','UpperTorso','LowerTorso','HumanoidRootPart','LeftArm','RightArm','LeftLeg','RightLeg'},
+    Default='Head', Callback=function(v) Config.aimbotPart=v end})
+S_Aim:AddDropdown({Name='Silent Part', Flag='SilentPart',
+    Values={'Head','Torso','UpperTorso','LowerTorso','HumanoidRootPart','LeftArm','RightArm','LeftLeg','RightLeg'},
+    Default='Head', Callback=function(v) Config.silentAimPart=v end})
 S_Aim:AddSlider({Name='FOV', Flag='AimbotFOV', Default=120, Min=10, Max=500, Rounding=0, Suffix=' px', Callback=function(v) Config.aimbotFOV=v end})
 S_Aim:AddSlider({Name='Smoothing', Flag='Smoothing', Default=18, Min=1, Max=99, Rounding=0, Suffix='%', Callback=function(v) Config.aimbotSmoothing=v/100 end})
 S_Aim:AddToggle({Name='Auto Hit',   Flag='AutoHit',   Default=false, Callback=function(v) Config.autoHit=v end})
