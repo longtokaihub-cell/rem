@@ -957,15 +957,16 @@ task.spawn(function()
 end)
 
 -- ─── INSTANT INTERACT ─────────────────────────────────────────────────────────
--- Game dùng InteractionConnections_Server folder trong interactable object.
--- Bên trong có Current (NumberValue) và Goal (NumberValue).
--- Server complete interaction khi Current.Value >= Goal.Value.
--- Instant interact: khi player đang hold interact (began=true đã fire),
--- set Current.Value = Goal.Value ngay lập tức.
--- Đồng thời fire Interact:FireServer({value=obj, began=true}) nếu chưa fire.
+-- Hầu hết interactables có length=0 — chỉ cần fire began=true.
+-- Collectible có length=1 — cần fire began=true rồi giữ, sau đó ended.
+-- Cách đơn giản nhất: fire began=true + ended=false liên tục mỗi 0.05s
+-- khi player ở trong range. Server sẽ process ngay khi condition đủ.
+-- Scan cả Interactables folder và GameObjects/collectible.
 
 local INTERACT_REMOTE = game:GetService("ReplicatedStorage")
     :WaitForChild("Events"):WaitForChild("Controls"):WaitForChild("Misc"):WaitForChild("Interact")
+
+local interactCooldowns = {}  -- [obj] = last fire tick
 
 local function getSpawnedInteractables()
     return workspace.Game and workspace.Game.Current
@@ -973,44 +974,64 @@ local function getSpawnedInteractables()
         and workspace.Game.Current.Spawned.Interactables
 end
 
+local function tryInstantInteract(obj, root)
+    if interactCooldowns[obj] and tick() - interactCooldowns[obj] < 0.5 then return end
+    local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+    if not primary then return end
+    if (root.Position - primary.Position).Magnitude > 12 then return end
+    -- kiểm tra có InteractionSettings không (obj phải là interactable)
+    local settings = obj:FindFirstChild("InteractionSettings")
+    if not settings then return end
+    interactCooldowns[obj] = tick()
+    -- fire began
+    pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = true}) end)
+    -- với collectible (length=1), fire liên tục để fill progress
+    local interSettings = pcall(function() return require(settings) end) and require(settings) or nil
+    local length = (interSettings and interSettings.length) or 0
+    if length and length > 0 then
+        task.spawn(function()
+            local endTime = tick() + length + 0.1
+            while tick() < endTime do
+                task.wait(0.05)
+                pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = true}) end)
+            end
+            pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = false}) end)
+        end)
+    else
+        pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = false}) end)
+    end
+end
+
 task.spawn(function()
     while true do
-        task.wait(0.1)
+        task.wait(0.15)
         if not Config.instantInteract then continue end
         local char = lp.Character
         local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
         if not root then continue end
 
+        -- scan Interactables folder
         local folder = getSpawnedInteractables()
-        if not folder then continue end
+        if folder then
+            for _, obj in ipairs(folder:GetChildren()) do
+                tryInstantInteract(obj, root)
+            end
+        end
 
-        for _, obj in ipairs(folder:GetChildren()) do
-            local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-            if not primary then continue end
-            local dist = (root.Position - primary.Position).Magnitude
-            if dist > 12 then continue end
-
-            -- fire interact began
-            pcall(function()
-                INTERACT_REMOTE:FireServer({value = obj, began = true})
-            end)
-
-            -- set Current = Goal để complete ngay
-            local connFolder = obj:FindFirstChild("InteractionConnections_Server")
-            if connFolder then
-                for _, conn in ipairs(connFolder:GetChildren()) do
-                    local current = conn:FindFirstChild("Current")
-                    local goal    = conn:FindFirstChild("Goal")
-                    if current and goal and goal.Value > 0 then
-                        pcall(function() current.Value = goal.Value end)
-                    end
+        -- scan GameObjects (door, collectible, mission objects, etc)
+        local gameObjects = workspace.Game and workspace.Game.Current
+            and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
+        if gameObjects then
+            for _, obj in ipairs(gameObjects:GetChildren()) do
+                if obj:IsA("Model") then tryInstantInteract(obj, root) end
+            end
+            -- collectible subfolder
+            local collectFolder = gameObjects:FindFirstChild("collectible")
+            if collectFolder then
+                for _, obj in ipairs(collectFolder:GetChildren()) do
+                    if obj:IsA("Model") then tryInstantInteract(obj, root) end
                 end
             end
-
-            -- fire ended
-            pcall(function()
-                INTERACT_REMOTE:FireServer({value = obj, began = false})
-            end)
         end
     end
 end)
