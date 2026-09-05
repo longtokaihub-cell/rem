@@ -1094,8 +1094,9 @@ S_Aim:AddDropdown({Name='Silent Part', Flag='SilentPart',
 S_Aim:AddSlider({Name='FOV', Flag='AimbotFOV', Default=120, Min=10, Max=500, Rounding=0, Suffix=' px', Callback=function(v) Config.aimbotFOV=v end})
 S_Aim:AddSlider({Name='Smoothing', Flag='Smoothing', Default=18, Min=1, Max=99, Rounding=0, Suffix='%', Callback=function(v) Config.aimbotSmoothing=v/100 end})
 S_Aim:AddToggle({Name='Auto Hit',   Flag='AutoHit',   Default=false, Callback=function(v) Config.autoHit=v end})
-S_Aim:AddToggle({Name='No Recoil',  Flag='NoRecoil',  Default=false, Callback=function(v) Config.noRecoil=v end})
-S_Aim:AddToggle({Name='No Spread',  Flag='NoSpread',  Default=false, Callback=function(v) Config.noSpread=v end})
+S_Aim:AddToggle({Name='No Recoil',        Flag='NoRecoil',        Default=false, Callback=function(v) Config.noRecoil=v end})
+S_Aim:AddToggle({Name='No Spread',        Flag='NoSpread',        Default=false, Callback=function(v) Config.noSpread=v end})
+S_Aim:AddToggle({Name='Instant Interact', Flag='InstantInteract', Default=false, Callback=function(v) Config.instantInteract=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
 S_GunMods:AddToggle({Name='RPM Hack',         Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
@@ -1192,9 +1193,8 @@ end})
 
 -- UTILITY
 local S_Weapons = DrawSection(T_Utility, 'Weapons', 'left')
-S_Weapons:AddToggle({Name='Infinite Ammo',   Flag='InfAmmo',        Default=false, Callback=function(v) Config.infiniteAmmo=v end})
-S_Weapons:AddSlider({Name='Ammo Count',      Flag='AmmoCount',      Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
-S_Weapons:AddToggle({Name='Instant Interact', Flag='InstantInteract', Default=false, Callback=function(v) Config.instantInteract=v end})
+S_Weapons:AddToggle({Name='Infinite Ammo', Flag='InfAmmo',   Default=false, Callback=function(v) Config.infiniteAmmo=v end})
+S_Weapons:AddSlider({Name='Ammo Count',    Flag='AmmoCount', Default=300, Min=1, Max=300, Rounding=0, Callback=function(v) Config.customAmmoCount=math.floor(v) end})
 
 local S_Char = DrawSection(T_Utility, 'Character', 'right')
 S_Char:AddToggle({Name='Infinite Stamina',    Flag='InfStamina', Default=false, Callback=function(v) Config.infiniteStamina=v end})
