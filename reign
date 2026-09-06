@@ -83,7 +83,6 @@ local Config = {
     aimbotWallCheck   = true,
     aimbotPart        = "Head",   -- bộ phận aimbot nhắm vào
     silentAimPart     = "Head",   -- bộ phận silent aim nhắm vào
-    rageBot           = false,    -- snap aim + auto full-auto, no smooth
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -713,37 +712,12 @@ end
 -- Aimbot RenderStepped — lerp camera CFrame về target
 RunService.RenderStepped:Connect(function(dt)
     local targetModel, targetPart = getNearestEnemyInFOV()
-    aimbotLocked = targetModel
+    aimbotLocked = targetModel  -- cập nhật locked state cho FOV color
     updateFOVCircle()
-
-    -- Rage Bot: snap aim + auto full-auto
-    if Config.rageBot then
-        -- set AutoShooting = true trên tất cả weapon trong character
-        local char = lp.Character
-        if char then
-            for _, tool in ipairs(char:GetChildren()) do
-                if tool:IsA("Tool") then
-                    local autoShooting = tool:FindFirstChild("AutoShooting", true)
-                    if autoShooting and autoShooting:IsA("BoolValue") then
-                        pcall(function()
-                            autoShooting.Value = targetPart ~= nil
-                        end)
-                    end
-                end
-            end
-        end
-        -- snap camera thẳng vào target, không smooth
-        if targetPart then
-            local aimPos = targetPart.Position
-            local camPos = camera.CFrame.Position
-            pcall(function()
-                camera.CFrame = CFrame.new(camPos, aimPos)
-            end)
-        end
-        return  -- rage bot override aimbot thường
+    if not Config.aimbotEnabled then
+        aimbotLocked = nil
+        return
     end
-
-    if not Config.aimbotEnabled then return end
     if not targetPart then return end
     local aimPos = targetPart.Position + Vector3.new(0, 0.15, 0)
     local camCFrame = camera.CFrame
@@ -1044,7 +1018,6 @@ local T_Settings = Window:AddTab('UI Settings')
 -- COMBAT
 local S_Aim = DrawSection(T_Combat, 'Aimbot', 'left')
 S_Aim:AddToggle({Name='Aimbot',     Flag='Aimbot',    Default=false, Callback=function(v) Config.aimbotEnabled=v end})
-S_Aim:AddToggle({Name='Rage Bot',   Flag='RageBot',   Default=false, Callback=function(v) Config.rageBot=v end})
 S_Aim:AddToggle({Name='Silent Aim', Flag='SilentAim', Default=false, Callback=function(v) Config.raycasting=v end})
 S_Aim:AddToggle({Name='Show FOV',   Flag='ShowFOV',   Default=true,  Callback=function(v) Config.aimbotShowFOV=v end})
 S_Aim:AddToggle({Name='Crosshair',  Flag='Crosshair', Default=true,  Callback=function(v)
