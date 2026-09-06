@@ -687,23 +687,29 @@ local function getClosestHead()
     local bestPos, bestDist = nil, math.huge
 
     for _, enemy in ipairs(container:GetChildren()) do
-        local targetPos
+        -- dùng Head để check FOV (luôn visible, consistent)
+        local fovPart = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Torso")
+        if not fovPart then continue end
+
+        local sp, onScreen = camera:WorldToViewportPoint(fovPart.Position)
+        if not onScreen then continue end
+
+        local screenDist = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
+        if screenDist > Config.aimbotFOV or screenDist >= bestDist then continue end
+
+        -- lấy actual aim position từ silentAimPart
+        local aimPos
         if enemy.Name == BULWARK_NAME then
-            targetPos = getBulwarkBackPosition(enemy)
+            aimPos = getBulwarkBackPosition(enemy)
         else
             local aimPart = getPartFromModel(enemy, Config.silentAimPart)
-            targetPos = aimPart and aimPart.Position
+            aimPos = aimPart and aimPart.Position
         end
-        if targetPos then
-            local sp, onScreen = camera:WorldToViewportPoint(targetPos)
-            if onScreen then
-                local screenDist = (Vector2.new(sp.X, sp.Y) - referencePos).Magnitude
-                if screenDist <= Config.aimbotFOV and screenDist < bestDist then
-                    if isVisible(targetPos) then
-                        bestDist = screenDist; bestPos = targetPos
-                    end
-                end
-            end
+        if not aimPos then continue end
+
+        if isVisible(aimPos) then
+            bestDist = screenDist
+            bestPos = aimPos
         end
     end
     return bestPos
@@ -712,12 +718,9 @@ end
 -- Aimbot RenderStepped — lerp camera CFrame về target
 RunService.RenderStepped:Connect(function(dt)
     local targetModel, targetPart = getNearestEnemyInFOV()
-    aimbotLocked = targetModel  -- cập nhật locked state cho FOV color
+    aimbotLocked = targetModel
     updateFOVCircle()
-    if not Config.aimbotEnabled then
-        aimbotLocked = nil
-        return
-    end
+    if not Config.aimbotEnabled then return end
     if not targetPart then return end
     local aimPos = targetPart.Position + Vector3.new(0, 0.15, 0)
     local camCFrame = camera.CFrame
