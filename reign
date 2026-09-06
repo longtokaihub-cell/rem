@@ -34,6 +34,7 @@ local Config = {
     gearESP           = false,
     throwableESP      = false,
     collectibleESP    = false,
+    moneyESP          = false,
     -- Entity ESP filters
     zombieESP         = false,
     zombieBox         = true,
@@ -82,7 +83,6 @@ local Config = {
     aimbotWallCheck   = true,
     aimbotPart        = "Head",   -- bộ phận aimbot nhắm vào
     silentAimPart     = "Head",   -- bộ phận silent aim nhắm vào
-    instantInteract   = false,
     -- Silent Aim dùng chung FOV với aimbot
 }
 
@@ -273,6 +273,7 @@ local PICKUP_CONFIG = {
     pickup_medkit         = {key="medkitESP",    color=Color3.fromRGB(255,0,0)},
     pickup_gear           = {key="gearESP",      color=Color3.fromRGB(255,165,0)},
     pickup_throwable      = {key="throwableESP", color=Color3.fromRGB(180,0,255)},
+    pickup_money          = {key="moneyESP",     color=Color3.fromRGB(50,255,100)},
 }
 
 local function resolvePickup(name)
@@ -619,23 +620,22 @@ local function getScreenCenter()
 end
 
 -- body part priority list — fallback nếu part không tồn tại
+-- R6 NPC rig part names (có space)
 local PART_FALLBACKS = {
-    Head            = {"Head", "HumanoidRootPart", "Torso"},
+    Head             = {"Head", "Torso", "HumanoidRootPart"},
+    Torso            = {"Torso", "HumanoidRootPart", "Head"},
     HumanoidRootPart = {"HumanoidRootPart", "Torso", "Head"},
-    Torso           = {"Torso", "UpperTorso", "HumanoidRootPart"},
-    UpperTorso      = {"UpperTorso", "Torso", "HumanoidRootPart"},
-    LowerTorso      = {"LowerTorso", "Torso", "HumanoidRootPart"},
-    LeftArm         = {"LeftUpperArm", "LeftLowerArm", "LeftArm", "Torso"},
-    RightArm        = {"RightUpperArm", "RightLowerArm", "RightArm", "Torso"},
-    LeftLeg         = {"LeftUpperLeg", "LeftLowerLeg", "LeftLeg", "HumanoidRootPart"},
-    RightLeg        = {"RightUpperLeg", "RightLowerLeg", "RightLeg", "HumanoidRootPart"},
+    UpperTorso       = {"UpperTorso", "Torso", "HumanoidRootPart"},
+    LowerTorso       = {"LowerTorso", "Torso", "HumanoidRootPart"},
+    ["Left Arm"]     = {"Left Arm", "LeftUpperArm", "LeftLowerArm", "Torso"},
+    ["Right Arm"]    = {"Right Arm", "RightUpperArm", "RightLowerArm", "Torso"},
+    ["Left Leg"]     = {"Left Leg", "LeftUpperLeg", "LeftLowerLeg", "HumanoidRootPart"},
+    ["Right Leg"]    = {"Right Leg", "RightUpperLeg", "RightLowerLeg", "HumanoidRootPart"},
 }
 
 local function getPartFromModel(model, partName)
-    -- thử exact name trước
     local part = model:FindFirstChild(partName)
     if part and part:IsA("BasePart") then return part end
-    -- fallback list
     local fallbacks = PART_FALLBACKS[partName]
     if fallbacks then
         for _, name in ipairs(fallbacks) do
@@ -643,7 +643,6 @@ local function getPartFromModel(model, partName)
             if p and p:IsA("BasePart") then return p end
         end
     end
-    -- last resort
     return model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
 end
 
@@ -956,86 +955,6 @@ task.spawn(function()
     end
 end)
 
--- ─── INSTANT INTERACT ─────────────────────────────────────────────────────────
--- Hầu hết interactables có length=0 — chỉ cần fire began=true.
--- Collectible có length=1 — cần fire began=true rồi giữ, sau đó ended.
--- Cách đơn giản nhất: fire began=true + ended=false liên tục mỗi 0.05s
--- khi player ở trong range. Server sẽ process ngay khi condition đủ.
--- Scan cả Interactables folder và GameObjects/collectible.
-
-local INTERACT_REMOTE = game:GetService("ReplicatedStorage")
-    :WaitForChild("Events"):WaitForChild("Controls"):WaitForChild("Misc"):WaitForChild("Interact")
-
-local interactCooldowns = {}  -- [obj] = last fire tick
-
-local function getSpawnedInteractables()
-    return workspace.Game and workspace.Game.Current
-        and workspace.Game.Current.Spawned
-        and workspace.Game.Current.Spawned.Interactables
-end
-
-local function tryInstantInteract(obj, root)
-    if interactCooldowns[obj] and tick() - interactCooldowns[obj] < 0.5 then return end
-    local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-    if not primary then return end
-    if (root.Position - primary.Position).Magnitude > 12 then return end
-    -- kiểm tra có InteractionSettings không (obj phải là interactable)
-    local settings = obj:FindFirstChild("InteractionSettings")
-    if not settings then return end
-    interactCooldowns[obj] = tick()
-    -- fire began
-    pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = true}) end)
-    -- với collectible (length=1), fire liên tục để fill progress
-    local interSettings = pcall(function() return require(settings) end) and require(settings) or nil
-    local length = (interSettings and interSettings.length) or 0
-    if length and length > 0 then
-        task.spawn(function()
-            local endTime = tick() + length + 0.1
-            while tick() < endTime do
-                task.wait(0.05)
-                pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = true}) end)
-            end
-            pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = false}) end)
-        end)
-    else
-        pcall(function() INTERACT_REMOTE:FireServer({value = obj, began = false}) end)
-    end
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.15)
-        if not Config.instantInteract then continue end
-        local char = lp.Character
-        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-        if not root then continue end
-
-        -- scan Interactables folder
-        local folder = getSpawnedInteractables()
-        if folder then
-            for _, obj in ipairs(folder:GetChildren()) do
-                tryInstantInteract(obj, root)
-            end
-        end
-
-        -- scan GameObjects (door, collectible, mission objects, etc)
-        local gameObjects = workspace.Game and workspace.Game.Current
-            and workspace.Game.Current.Spawned and workspace.Game.Current.Spawned.GameObjects
-        if gameObjects then
-            for _, obj in ipairs(gameObjects:GetChildren()) do
-                if obj:IsA("Model") then tryInstantInteract(obj, root) end
-            end
-            -- collectible subfolder
-            local collectFolder = gameObjects:FindFirstChild("collectible")
-            if collectFolder then
-                for _, obj in ipairs(collectFolder:GetChildren()) do
-                    if obj:IsA("Model") then tryInstantInteract(obj, root) end
-                end
-            end
-        end
-    end
-end)
-
 -- ─── ENVIRONMENT HEARTBEAT ────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function()
@@ -1107,17 +1026,16 @@ S_Aim:AddToggle({Name='Crosshair',  Flag='Crosshair', Default=true,  Callback=fu
 end})
 S_Aim:AddToggle({Name='Wall Check', Flag='WallCheck', Default=true,  Callback=function(v) Config.aimbotWallCheck=v end})
 S_Aim:AddDropdown({Name='Aimbot Part', Flag='AimbotPart',
-    Values={'Head','Torso','UpperTorso','LowerTorso','HumanoidRootPart','LeftArm','RightArm','LeftLeg','RightLeg'},
+    Values={'Head','Torso','HumanoidRootPart','Left Arm','Right Arm','Left Leg','Right Leg'},
     Default='Head', Callback=function(v) Config.aimbotPart=v end})
 S_Aim:AddDropdown({Name='Silent Part', Flag='SilentPart',
-    Values={'Head','Torso','UpperTorso','LowerTorso','HumanoidRootPart','LeftArm','RightArm','LeftLeg','RightLeg'},
+    Values={'Head','Torso','HumanoidRootPart','Left Arm','Right Arm','Left Leg','Right Leg'},
     Default='Head', Callback=function(v) Config.silentAimPart=v end})
 S_Aim:AddSlider({Name='FOV', Flag='AimbotFOV', Default=120, Min=10, Max=500, Rounding=0, Suffix=' px', Callback=function(v) Config.aimbotFOV=v end})
 S_Aim:AddSlider({Name='Smoothing', Flag='Smoothing', Default=18, Min=1, Max=99, Rounding=0, Suffix='%', Callback=function(v) Config.aimbotSmoothing=v/100 end})
 S_Aim:AddToggle({Name='Auto Hit',   Flag='AutoHit',   Default=false, Callback=function(v) Config.autoHit=v end})
-S_Aim:AddToggle({Name='No Recoil',        Flag='NoRecoil',        Default=false, Callback=function(v) Config.noRecoil=v end})
-S_Aim:AddToggle({Name='No Spread',        Flag='NoSpread',        Default=false, Callback=function(v) Config.noSpread=v end})
-S_Aim:AddToggle({Name='Instant Interact', Flag='InstantInteract', Default=false, Callback=function(v) Config.instantInteract=v end})
+S_Aim:AddToggle({Name='No Recoil',  Flag='NoRecoil',  Default=false, Callback=function(v) Config.noRecoil=v end})
+S_Aim:AddToggle({Name='No Spread',  Flag='NoSpread',  Default=false, Callback=function(v) Config.noSpread=v end})
 
 local S_GunMods = DrawSection(T_Combat, 'Gun Mods', 'left')
 S_GunMods:AddToggle({Name='RPM Hack',         Flag='RPMEnabled',    Default=false, Callback=function(v) Config.rpmEnabled=v end})
@@ -1152,6 +1070,7 @@ S_Pickup:AddToggle({Name='Armor ESP',       Flag='ArmorESP',       Default=false
 S_Pickup:AddToggle({Name='Medkit ESP',      Flag='MedkitESP',      Default=false, Callback=function(v) Config.medkitESP=v end})
 S_Pickup:AddToggle({Name='Gear ESP',        Flag='GearESP',        Default=false, Callback=function(v) Config.gearESP=v end})
 S_Pickup:AddToggle({Name='Throwable ESP',   Flag='ThrowableESP',   Default=false, Callback=function(v) Config.throwableESP=v end})
+S_Pickup:AddToggle({Name='Money ESP',       Flag='MoneyESP',       Default=false, Callback=function(v) Config.moneyESP=v end})
 S_Pickup:AddToggle({Name='Collectible ESP', Flag='CollectibleESP', Default=false, Callback=function(v)
     Config.collectibleESP=v
     if not v then
